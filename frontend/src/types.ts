@@ -212,3 +212,21 @@ export interface SeedResponse {
   suggestions_created?: number;
   [key: string]: unknown;
 }
+
+export type NavSection =
+  | "main"
+  | "article"
+  | "all_pages"
+  | "category"
+  | "curation"
+  | "mcp_guide"
+  | "assistant";
+
+export interface AssistantChatResponse {
+  status: string;
+  session_id: string;
+  user_id: string;
+  namespace: string;
+  reply: string;
+  tool_calls: ToolCallInfo[];
+}

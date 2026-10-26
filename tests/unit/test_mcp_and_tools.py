@@ -410,3 +410,31 @@ def test_explorer_api_routes_and_insider_spa() -> None:
     insider_resp = client.get("/insider")
     assert insider_resp.status_code == 200
     assert "text/html" in insider_resp.headers["content-type"]
+
+    # 12. POST /api/assistant/chat (MCP-connected demo assistant: remember & recall)
+    asst_remember_resp = client.post(
+        "/api/assistant/chat",
+        json={
+            "message": "Remember that we decided to use Wikipedia-style article layout for Blob.",
+            "namespace": "default",
+        },
+    )
+    assert asst_remember_resp.status_code == 200
+    asst_remember_data = asst_remember_resp.json()
+    assert asst_remember_data["status"] == "ok"
+    assert asst_remember_data["reply"]
+    assert any(tc["name"] == "remember" for tc in asst_remember_data["tool_calls"])
+
+    asst_recall_resp = client.post(
+        "/api/assistant/chat",
+        json={
+            "message": "What is our Blob storage architecture?",
+            "session_id": asst_remember_data["session_id"],
+            "namespace": "default",
+        },
+    )
+    assert asst_recall_resp.status_code == 200
+    asst_recall_data = asst_recall_resp.json()
+    assert asst_recall_data["status"] == "ok"
+    assert asst_recall_data["reply"]
+    assert any(tc["name"] == "recall" for tc in asst_recall_data["tool_calls"])

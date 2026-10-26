@@ -1,19 +1,22 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowRight,
+  BookOpen,
   Compass,
   Filter,
-  Focus,
   Ghost,
   Layers,
   Maximize2,
+  Network,
   Search,
   Sparkles,
+  X,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
 import type { Cluster, GraphEdge, GraphNode } from "../types";
 
-interface GraphCanvasProps {
+export interface GraphCanvasProps {
   nodes: GraphNode[];
   edges: GraphEdge[];
   clusters: Cluster[];
@@ -25,6 +28,7 @@ interface GraphCanvasProps {
   onSelectCluster: (clusterId: string | null) => void;
   onSeedDemo: () => void;
   isSeeding: boolean;
+  onClose?: () => void;
 }
 
 interface PositionedNode extends GraphNode {
@@ -52,6 +56,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
   onSelectCluster,
   onSeedDemo,
   isSeeding,
+  onClose,
 }) => {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -84,7 +89,6 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
       }
       const hasCoords = Math.abs(n.x) > 0.0001 || Math.abs(n.y) > 0.0001;
       if (hasCoords) {
-        // Coordinates may either be normalized [-1.5, 1.5] or pixel-scaled
         const factor = Math.abs(n.x) <= 3 && Math.abs(n.y) <= 3 ? scale : 1;
         return {
           ...n,
@@ -107,7 +111,6 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
     return positionedNodes.filter((n) => {
       if (!showGhosts && n.status === "ghost") return false;
       if (selectedClusterId && n.cluster_id !== selectedClusterId) {
-        // Keep direct neighbors of the active node visible for context
         return false;
       }
       if (!q) return true;
@@ -225,34 +228,67 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
     return set;
   }, [activeSlug, edges]);
 
+  const activeNodeObj = useMemo(
+    () => nodes.find((n) => n.slug === activeSlug) || null,
+    [nodes, activeSlug]
+  );
+
   return (
-    <div className="relative flex flex-col h-full w-full bg-[#070a12] select-none overflow-hidden border-r border-slate-800/80">
-      {/* Top Floating Filter & Cluster Bar */}
-      <div className="z-10 flex flex-col gap-2 p-3 bg-slate-950/85 backdrop-blur-md border-b border-slate-800/80">
-        <div className="flex items-center gap-2">
-          <div className="relative flex-1">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Filter nodes by title, [[slug]], or #tag..."
-              className="w-full bg-slate-900/90 border border-slate-800 rounded-md pl-8 pr-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500/70"
-            />
+    <div className="relative flex flex-col h-full w-full bg-[#070a12] select-none overflow-hidden">
+      {/* Top Modal Header & Filter Bar */}
+      <div className="z-10 flex flex-col gap-2.5 px-4 py-3 bg-slate-950/95 backdrop-blur-md border-b border-slate-800">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-md bg-indigo-500/20 border border-indigo-500/40 flex items-center justify-center">
+              <Network className="w-4 h-4 text-indigo-400" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-white leading-tight">
+                Knowledge Graph Explorer
+              </h2>
+              <p className="text-[11px] text-slate-400">
+                2D force &amp; semantic cluster topology ({nodes.length} nodes,{" "}
+                {edges.length} links)
+              </p>
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={() => setShowGhosts((v) => !v)}
-            title="Toggle dashed Ghost Nodes (referenced but unwritten Wiki pages)"
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium border transition ${
-              showGhosts
-                ? "bg-amber-500/15 text-amber-300 border-amber-500/40"
-                : "bg-slate-900 text-slate-400 border-slate-800"
-            }`}
-          >
-            <Ghost className="w-3.5 h-3.5" />
-            <span>Ghosts</span>
-          </button>
+
+          <div className="flex items-center gap-2 flex-1 max-w-md">
+            <div className="relative flex-1">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Filter nodes by title, [[slug]], or #tag..."
+                className="w-full bg-slate-900/90 border border-slate-800 rounded-md pl-8 pr-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500/70"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowGhosts((v) => !v)}
+              title="Toggle dashed Ghost Nodes (referenced but unwritten Wiki pages)"
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium border transition ${
+                showGhosts
+                  ? "bg-amber-500/15 text-amber-300 border-amber-500/40"
+                  : "bg-slate-900 text-slate-400 border-slate-800"
+              }`}
+            >
+              <Ghost className="w-3.5 h-3.5" />
+              <span>Ghosts</span>
+            </button>
+          </div>
+
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white text-xs font-medium border border-slate-700 transition"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>Close Graph</span>
+            </button>
+          )}
         </div>
 
         {/* Cluster Filter Pills */}
@@ -260,7 +296,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
           <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar">
             <span className="flex items-center gap-1 text-[11px] text-slate-400 mr-1 shrink-0">
               <Layers className="w-3 h-3 text-indigo-400" />
-              Clusters:
+              Categories:
             </span>
             <button
               type="button"
@@ -292,7 +328,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
                     className="w-2 h-2 rounded-full shrink-0"
                     style={{ backgroundColor: cluster.color || "#6366f1" }}
                   />
-                  <span className="truncate max-w-[130px]">{cluster.title}</span>
+                  <span className="truncate max-w-[140px]">{cluster.title}</span>
                   <span className="text-[10px] text-slate-400">
                     {cluster.page_slugs.length}
                   </span>
@@ -305,7 +341,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
 
       {/* Agent Highlight / Focus Banner */}
       {(highlightedSlugs.length > 0 || highlightReason) && (
-        <div className="z-10 mx-3 mt-2 px-3 py-2 rounded-lg bg-indigo-950/90 border border-indigo-500/40 flex items-center justify-between gap-2 text-xs text-indigo-200 shadow-lg">
+        <div className="z-10 mx-4 mt-2 px-3 py-2 rounded-lg bg-indigo-950/90 border border-indigo-500/40 flex items-center justify-between gap-2 text-xs text-indigo-200 shadow-lg">
           <div className="flex items-center gap-2 min-w-0">
             <Sparkles className="w-4 h-4 text-indigo-400 shrink-0 animate-pulse" />
             <span className="truncate">
@@ -321,6 +357,32 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
         </div>
       )}
 
+      {/* Floating Active Article Jump Bar */}
+      {activeSlug && (
+        <div className="z-10 mx-4 mt-2 px-3.5 py-2 rounded-lg bg-slate-900/95 border border-slate-700/80 flex items-center justify-between gap-3 text-xs text-slate-200 shadow-lg">
+          <div className="flex items-center gap-2 min-w-0">
+            <BookOpen className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+            <span className="text-slate-400 shrink-0">Selected node:</span>
+            <strong className="text-white truncate">
+              {activeNodeObj ? activeNodeObj.title : activeSlug}
+            </strong>
+            <span className="font-mono text-[11px] text-indigo-300 truncate">
+              [[{activeSlug}]]
+            </span>
+          </div>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs transition shrink-0 shadow"
+            >
+              <span>Read Article: [[{activeSlug}]]</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Main 2D Interactive SVG Graph */}
       <div className="relative flex-1 w-full h-full">
         {nodes.length === 0 ? (
@@ -330,12 +392,12 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
                 <Compass className="w-5 h-5 text-indigo-400" />
               </div>
               <h3 className="text-sm font-semibold text-slate-100 mb-1">
-                Memory Graph is Empty
+                Knowledge Graph is Empty
               </h3>
               <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-                Load the 4-cluster Obsidian demo dataset (System Architecture,
-                Developer Preferences, Project Roadmap &amp; Agent Workflows) or
-                ingest new episodes to populate the graph.
+                Load the 4-cluster demo dataset (System Architecture, Developer
+                Preferences, Project Roadmap &amp; Agent Workflows) or ingest
+                new episodes to populate the graph.
               </p>
               <button
                 type="button"
@@ -344,7 +406,9 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-xs font-semibold text-white shadow-md transition"
               >
                 <Sparkles className="w-3.5 h-3.5" />
-                <span>{isSeeding ? "Seeding Fabric..." : "Load 4-Cluster Demo Seed"}</span>
+                <span>
+                  {isSeeding ? "Seeding Encyclopedia..." : "Load Demo Seed"}
+                </span>
               </button>
             </div>
           </div>
@@ -442,7 +506,8 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
                 const dst = visibleNodeMap.get(edge.target);
                 if (!src || !dst) return null;
                 const edgeType = edge.type || "wikilink";
-                const strokeColor = EDGE_COLORS[edgeType] || EDGE_COLORS.wikilink;
+                const strokeColor =
+                  EDGE_COLORS[edgeType] || EDGE_COLORS.wikilink;
                 const isIncident =
                   activeSlug === edge.source || activeSlug === edge.target;
                 const isGhostEdge =
@@ -592,7 +657,9 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
                                 : "#94a3b8"
                       }
                       className={`text-[10px] pointer-events-none transition-colors ${
-                        isActive || isHighlighted ? "font-semibold" : "font-medium"
+                        isActive || isHighlighted
+                          ? "font-semibold"
+                          : "font-medium"
                       }`}
                     >
                       {node.title.length > 26
@@ -611,15 +678,15 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
           <div className="pointer-events-auto flex items-center gap-3 px-3 py-1.5 rounded-lg bg-slate-950/90 border border-slate-800/90 text-[11px] text-slate-400 shadow-lg">
             <span className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 inline-block" />
-              Active Wiki
+              Active Article
             </span>
             <span className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded-full border border-dashed border-amber-400 inline-block" />
-              Ghost Node
+              Ghost Page
             </span>
             <span className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" />
-              Suggestion
+              Open Suggestion
             </span>
           </div>
 

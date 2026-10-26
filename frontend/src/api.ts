@@ -1,4 +1,5 @@
 import type {
+  AssistantChatResponse,
   ChatResponse,
   Cluster,
   CurateResponse,
@@ -147,6 +148,21 @@ export async function triggerCuration(
   });
 }
 
+export async function fetchSuggestions(
+  namespace = "default",
+  status = "open",
+  targetSlug?: string
+): Promise<{
+  status: string;
+  namespace: string;
+  count: number;
+  suggestions: CurationSuggestion[];
+}> {
+  const params = new URLSearchParams({ namespace, status });
+  if (targetSlug) params.set("target_slug", targetSlug);
+  return requestJson(`/api/suggestions?${params.toString()}`);
+}
+
 export async function applySuggestion(
   suggestionId: string,
   namespace = "default"
@@ -195,6 +211,18 @@ export async function sendChatMessage(payload: {
   view_context: ViewContext;
 }): Promise<ChatResponse> {
   return requestJson<ChatResponse>("/api/chat", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function sendAssistantMessage(payload: {
+  message: string;
+  session_id?: string | null;
+  user_id?: string;
+  namespace?: string;
+}): Promise<AssistantChatResponse> {
+  return requestJson<AssistantChatResponse>("/api/assistant/chat", {
     method: "POST",
     body: JSON.stringify(payload),
   });

@@ -2,67 +2,56 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   Bot,
   Compass,
-  Cpu,
-  Inbox,
-  Link2,
   Loader2,
-  MessageSquare,
-  PlusCircle,
   Send,
   Sparkles,
   Terminal,
   User,
+  X,
 } from "lucide-react";
-import type {
-  ChatMessage,
-  Episode,
-  UIActionEvent,
-  ViewContext,
-} from "../types";
-import { slugifyText } from "./WikiPane";
+import type { ChatMessage, UIActionEvent, ViewContext } from "../types";
 
-interface AgentSidebarProps {
+export interface AgentSidebarProps {
   namespace: string;
   viewContext: ViewContext;
   messages: ChatMessage[];
-  pendingEpisodes: Episode[];
   isSendingChat: boolean;
-  isCurating: boolean;
   sseConnected: boolean;
   onSendMessage: (message: string) => Promise<void>;
-  onCreateEpisode: (content: string, tags: string[], autoCurate: boolean) => Promise<void>;
-  onRunCuration: () => Promise<void>;
   onSelectSlug: (slug: string) => void;
   onExecuteUIAction: (action: UIActionEvent) => void;
+  onClose: () => void;
 }
 
 const QUICK_PROMPTS = [
+  "Summarize this article",
   "Explain connections to this page",
-  "Curate pending episodes",
   "Synthesize ghost nodes",
-  "Highlight architecture dependencies",
+  "Check for missing links",
 ];
 
+function slugifyText(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-_]/g, "")
+    .replace(/[\s_]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
 export const AgentSidebar: React.FC<AgentSidebarProps> = ({
+  namespace,
   viewContext,
   messages,
-  pendingEpisodes,
   isSendingChat,
-  isCurating,
   sseConnected,
   onSendMessage,
-  onCreateEpisode,
-  onRunCuration,
   onSelectSlug,
   onExecuteUIAction,
+  onClose,
 }) => {
-  const [activeTab, setActiveTab] = useState<"chat" | "inbox">("chat");
   const [chatInput, setChatInput] = useState("");
-  const [episodeContent, setEpisodeContent] = useState("");
-  const [episodeTags, setEpisodeTags] = useState("architecture, memory");
-  const [autoCurateEpisode, setAutoCurateEpisode] = useState(false);
-  const [isAddingEpisode, setIsAddingEpisode] = useState(false);
-
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -79,29 +68,11 @@ export const AgentSidebar: React.FC<AgentSidebarProps> = ({
 
   const handleQuickPrompt = async (prompt: string) => {
     if (isSendingChat) return;
-    setActiveTab("chat");
     await onSendMessage(prompt);
   };
 
-  const handleEpisodeSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const content = episodeContent.trim();
-    if (!content || isAddingEpisode) return;
-    setIsAddingEpisode(true);
-    try {
-      const tags = episodeTags
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean);
-      await onCreateEpisode(content, tags, autoCurateEpisode);
-      setEpisodeContent("");
-    } finally {
-      setIsAddingEpisode(false);
-    }
-  };
-
-  // Render chat markdown with clickable [[Wiki Links]]
-  const renderMessageContent = (content: string) => {
+  // Render chat markdown with clickable [[Wiki Links]] styled as Wikipedia blue links
+  const renderMessageContent = (content: string, isUser = false) => {
     const parts = content.split(/(\[\[[^\]]+\]\]|\*\*[^*]+\*\*|`[^`]+`)/g);
     return parts.map((part, idx) => {
       if (part.startsWith("[[") && part.endsWith("]]")) {
@@ -114,16 +85,22 @@ export const AgentSidebar: React.FC<AgentSidebarProps> = ({
             key={`${slug}-${idx}`}
             type="button"
             onClick={() => onSelectSlug(slug)}
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-500/30 text-[11px] font-medium transition"
+            className={
+              isUser
+                ? "underline font-medium text-white hover:text-blue-100"
+                : "text-[#3366cc] hover:underline font-medium"
+            }
           >
-            <Link2 className="w-2.5 h-2.5" />
-            <span>{label}</span>
+            {label}
           </button>
         );
       }
       if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
         return (
-          <strong key={idx} className="font-semibold text-white">
+          <strong
+            key={idx}
+            className={`font-semibold ${isUser ? "text-white" : "text-[#202122]"}`}
+          >
             {part.slice(2, -2)}
           </strong>
         );
@@ -132,7 +109,11 @@ export const AgentSidebar: React.FC<AgentSidebarProps> = ({
         return (
           <code
             key={idx}
-            className="px-1 py-0.5 rounded bg-slate-800 text-amber-200 font-mono text-[11px]"
+            className={`px-1 py-0.5 rounded font-mono text-[11px] ${
+              isUser
+                ? "bg-blue-700 text-blue-50"
+                : "bg-[#f8f9fa] border border-[#eaecf0] text-[#202122]"
+            }`}
           >
             {part.slice(1, -1)}
           </code>
@@ -143,323 +124,179 @@ export const AgentSidebar: React.FC<AgentSidebarProps> = ({
   };
 
   return (
-    <div className="flex flex-col h-full w-full bg-[#090d16] overflow-hidden">
-      {/* Top Sidebar Header & Tabs */}
-      <div className="flex items-center justify-between px-3.5 py-2.5 bg-slate-950/90 border-b border-slate-800/80">
-        <div className="flex items-center gap-2">
-          <div className="relative">
-            <Bot className="w-4 h-4 text-indigo-400" />
+    <aside className="flex flex-col h-full w-full bg-white text-[#202122] overflow-hidden">
+      {/* Drawer Header */}
+      <div className="flex items-center justify-between px-4 py-3 bg-[#f8f9fa] border-b border-[#a2a9b1]">
+        <div className="flex items-center gap-2.5">
+          <div className="relative flex items-center justify-center w-7 h-7 rounded bg-[#eaf3ff] border border-[#3366cc]/30">
+            <Bot className="w-4 h-4 text-[#3366cc]" />
             <span
               title={
                 sseConnected
                   ? "SSE Live Event Stream Connected"
                   : "SSE Reconnecting..."
               }
-              className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-slate-950 ${
-                sseConnected ? "bg-emerald-400" : "bg-amber-400"
+              className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white ${
+                sseConnected ? "bg-[#14866d]" : "bg-[#fc3]"
               }`}
             />
           </div>
-          <span className="text-xs font-semibold text-slate-100">
-            Blob Co-Curator
-          </span>
-        </div>
-
-        <div className="flex items-center bg-slate-900 border border-slate-800 rounded-md p-0.5">
-          <button
-            type="button"
-            onClick={() => setActiveTab("chat")}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-medium transition ${
-              activeTab === "chat"
-                ? "bg-indigo-600 text-white"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            <MessageSquare className="w-3 h-3" />
-            <span>Co-Curate</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("inbox")}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-medium transition ${
-              activeTab === "inbox"
-                ? "bg-indigo-600 text-white"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            <Inbox className="w-3 h-3" />
-            <span>Episodic Inbox</span>
-            {pendingEpisodes.length > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-bold">
-                {pendingEpisodes.length}
-              </span>
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* Live Bidirectional Active Viewport Context Badge */}
-      <div className="px-3.5 py-2 bg-indigo-950/30 border-b border-slate-800/80 space-y-1">
-        <div className="flex items-center justify-between text-[10px] text-indigo-300 font-medium">
-          <span className="flex items-center gap-1">
-            <Compass className="w-3 h-3 text-indigo-400" />
-            <span>Active Viewport Context (Injected in Every Turn)</span>
-          </span>
-          <span className="font-mono text-slate-400">
-            neighbors: {viewContext.visible_neighbors.length}
-          </span>
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
-          <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300">
-            page:{" "}
-            <strong className="text-indigo-300">
-              {viewContext.active_page_slug || "none"}
-            </strong>
-          </span>
-          <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300">
-            cluster:{" "}
-            <strong className="text-indigo-300">
-              {viewContext.selected_cluster_id || "all"}
-            </strong>
-          </span>
-        </div>
-      </div>
-
-      {activeTab === "chat" ? (
-        <>
-          {/* Quick Action Chips */}
-          <div className="px-3 py-2 border-b border-slate-800/70 bg-slate-950/50">
-            <div className="flex flex-wrap gap-1.5">
-              {QUICK_PROMPTS.map((chip) => (
-                <button
-                  key={chip}
-                  type="button"
-                  disabled={isSendingChat}
-                  onClick={() => handleQuickPrompt(chip)}
-                  className="px-2 py-1 rounded-md bg-slate-900 hover:bg-indigo-950/70 border border-slate-800 hover:border-indigo-500/40 text-[11px] text-slate-300 hover:text-indigo-200 transition disabled:opacity-50"
-                >
-                  {chip}
-                </button>
-              ))}
-            </div>
+          <div>
+            <h2 className="font-serif text-sm font-bold text-[#202122] leading-tight">
+              Co-Curator Assistant
+            </h2>
+            <p className="text-[11px] text-[#54595d]">
+              Encyclopedia Maintainer ({namespace})
+            </p>
           </div>
+        </div>
 
-          {/* Chat Message Stream */}
-          <div className="flex-1 overflow-y-auto p-3.5 space-y-3">
-            {messages.map((msg) => (
+        <button
+          type="button"
+          onClick={onClose}
+          title="Close Co-Curator Drawer"
+          className="p-1.5 rounded hover:bg-[#eaecf0] text-[#54595d] hover:text-[#202122] transition"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Subtle Context Bar */}
+      <div className="px-4 py-2 bg-[#f8f9fa] border-b border-[#eaecf0] flex items-center justify-between gap-2 text-xs">
+        <div className="flex items-center gap-1.5 min-w-0 text-[#54595d]">
+          <Compass className="w-3.5 h-3.5 text-[#3366cc] shrink-0" />
+          <span className="shrink-0">Reading:</span>
+          <strong className="text-[#202122] truncate font-medium">
+            {viewContext.active_page_slug || "Main Page"}
+          </strong>
+        </div>
+        <span className="text-[11px] text-[#72777d] shrink-0">
+          {viewContext.visible_neighbors.length} connected
+        </span>
+      </div>
+
+      {/* Quick Prompt Chips */}
+      <div className="px-3.5 py-2.5 border-b border-[#eaecf0] bg-white">
+        <div className="text-[10px] uppercase tracking-wider font-semibold text-[#72777d] mb-1.5">
+          Suggested Editorial Actions
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {QUICK_PROMPTS.map((chip) => (
+            <button
+              key={chip}
+              type="button"
+              disabled={isSendingChat}
+              onClick={() => handleQuickPrompt(chip)}
+              className="px-2.5 py-1 rounded bg-[#f8f9fa] hover:bg-[#eaf3ff] border border-[#a2a9b1]/60 hover:border-[#3366cc] text-[11px] text-[#202122] hover:text-[#3366cc] transition disabled:opacity-50"
+            >
+              {chip}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Chat Message History */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-3.5 bg-white">
+        {messages.map((msg) => {
+          const isUser = msg.role === "user";
+          return (
+            <div
+              key={msg.id}
+              className={`flex flex-col gap-1 ${
+                isUser ? "items-end" : "items-start"
+              }`}
+            >
+              <div className="flex items-center gap-1.5 text-[11px] text-[#72777d]">
+                {isUser ? (
+                  <>
+                    <span>You</span>
+                    <User className="w-3 h-3 text-[#54595d]" />
+                  </>
+                ) : (
+                  <>
+                    <Bot className="w-3 h-3 text-[#3366cc]" />
+                    <span className="font-semibold text-[#202122]">
+                      Co-Curator
+                    </span>
+                  </>
+                )}
+              </div>
+
               <div
-                key={msg.id}
-                className={`flex flex-col gap-1.5 ${
-                  msg.role === "user" ? "items-end" : "items-start"
+                className={`max-w-[92%] rounded-lg px-3.5 py-2.5 text-xs leading-relaxed whitespace-pre-wrap ${
+                  isUser
+                    ? "bg-[#3366cc] text-white"
+                    : "bg-[#f8f9fa] border border-[#eaecf0] text-[#202122]"
                 }`}
               >
-                <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
-                  {msg.role === "user" ? (
-                    <>
-                      <span>You</span>
-                      <User className="w-3 h-3 text-slate-400" />
-                    </>
-                  ) : (
-                    <>
-                      <Bot className="w-3 h-3 text-indigo-400" />
-                      <span className="text-indigo-300 font-medium">blob</span>
-                    </>
-                  )}
-                </div>
-
-                <div
-                  className={`max-w-[92%] rounded-xl px-3 py-2.5 text-xs leading-relaxed whitespace-pre-wrap ${
-                    msg.role === "user"
-                      ? "bg-indigo-600 text-white"
-                      : "bg-slate-900/95 border border-slate-800 text-slate-200"
-                  }`}
-                >
-                  {renderMessageContent(msg.content)}
-                </div>
-
-                {/* Tool Calls & UI Action Pills */}
-                {msg.tool_calls && msg.tool_calls.length > 0 && (
-                  <div className="flex flex-wrap gap-1 max-w-[92%]">
-                    {msg.tool_calls.map((tc, idx) => (
-                      <span
-                        key={`${tc.name}-${idx}`}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-[10px] font-mono text-slate-400"
-                      >
-                        <Terminal className="w-2.5 h-2.5 text-indigo-400" />
-                        <span>{tc.name}()</span>
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {msg.ui_actions && msg.ui_actions.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 max-w-[92%]">
-                    {msg.ui_actions.map((act) => (
-                      <button
-                        key={act.id}
-                        type="button"
-                        onClick={() => onExecuteUIAction(act)}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/40 text-[10px] font-mono text-indigo-300 transition"
-                      >
-                        <Sparkles className="w-2.5 h-2.5 text-indigo-400" />
-                        <span>{act.type}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
+                {renderMessageContent(msg.content, isUser)}
               </div>
-            ))}
 
-            {isSendingChat && (
-              <div className="flex items-center gap-2 text-xs text-indigo-300 bg-slate-900/80 border border-slate-800 rounded-xl px-3 py-2">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
-                <span>Blob is traversing memory fabric &amp; graph context...</span>
-              </div>
-            )}
-            <div ref={chatEndRef} />
-          </div>
-
-          {/* Chat Input Form */}
-          <form
-            onSubmit={handleChatSubmit}
-            className="p-3 bg-slate-950 border-t border-slate-800/80 flex items-center gap-2"
-          >
-            <input
-              type="text"
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              placeholder="Ask blob to recall, synthesize, or highlight graph nodes..."
-              className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500"
-            />
-            <button
-              type="submit"
-              disabled={isSendingChat || !chatInput.trim()}
-              className="p-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white transition"
-            >
-              <Send className="w-3.5 h-3.5" />
-            </button>
-          </form>
-        </>
-      ) : (
-        /* Episodic Inbox & Quick Ingest Tab */
-        <div className="flex-1 overflow-y-auto p-3.5 space-y-4">
-          {/* Add Memory Episode Form */}
-          <form
-            onSubmit={handleEpisodeSubmit}
-            className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2.5"
-          >
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
-                <PlusCircle className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Add Memory Episode</span>
-              </span>
-              <span className="text-[10px] font-mono text-slate-400">
-                768-d Vector Ingest
-              </span>
-            </div>
-
-            <textarea
-              rows={3}
-              value={episodeContent}
-              onChange={(e) => setEpisodeContent(e.target.value)}
-              placeholder="Record a raw decision, user preference, or engineering observation..."
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500"
-            />
-
-            <input
-              type="text"
-              value={episodeTags}
-              onChange={(e) => setEpisodeTags(e.target.value)}
-              placeholder="Tags (comma-separated)"
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
-            />
-
-            <div className="flex items-center justify-between pt-1">
-              <label className="flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={autoCurateEpisode}
-                  onChange={(e) => setAutoCurateEpisode(e.target.checked)}
-                  className="rounded border-slate-700 bg-slate-950 text-indigo-600"
-                />
-                <span>Auto-curate in background</span>
-              </label>
-
-              <button
-                type="submit"
-                disabled={isAddingEpisode || !episodeContent.trim()}
-                className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-xs font-semibold text-white transition"
-              >
-                {isAddingEpisode ? "Ingesting..." : "Ingest Episode"}
-              </button>
-            </div>
-          </form>
-
-          {/* Run Curation Pipeline Card */}
-          <div className="p-3 rounded-xl bg-indigo-950/40 border border-indigo-500/30 flex items-center justify-between gap-2">
-            <div>
-              <div className="text-xs font-semibold text-indigo-200">
-                Two-Stage Curation Pipeline
-              </div>
-              <p className="text-[11px] text-slate-400">
-                Synthesize {pendingEpisodes.length} pending episode(s) into
-                Wiki pages &amp; recompute clusters.
-              </p>
-            </div>
-            <button
-              type="button"
-              disabled={isCurating}
-              onClick={onRunCuration}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-xs font-semibold text-white shrink-0 shadow"
-            >
-              <Cpu className="w-3.5 h-3.5" />
-              <span>{isCurating ? "Curating..." : "Run Curation Pipeline"}</span>
-            </button>
-          </div>
-
-          {/* Pending Episodes List */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
-              <span>Pending Episodic Inbox ({pendingEpisodes.length})</span>
-            </div>
-
-            {pendingEpisodes.length === 0 ? (
-              <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800/80 text-center text-xs text-slate-500">
-                All episodic memories have been synthesized into Wiki pages!
-              </div>
-            ) : (
-              pendingEpisodes.map((ep) => (
-                <div
-                  key={ep.id}
-                  className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 space-y-1.5"
-                >
-                  <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
-                    <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300">
-                      {ep.id}
+              {/* Tool Calls Badges */}
+              {msg.tool_calls && msg.tool_calls.length > 0 && (
+                <div className="flex flex-wrap gap-1 max-w-[92%] pt-0.5">
+                  {msg.tool_calls.map((tc, idx) => (
+                    <span
+                      key={`${tc.name}-${idx}`}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#f8f9fa] border border-[#a2a9b1]/60 text-[10px] font-mono text-[#54595d]"
+                    >
+                      <Terminal className="w-2.5 h-2.5 text-[#3366cc]" />
+                      <span>{tc.name}()</span>
                     </span>
-                    <span>{ep.source_agent}</span>
-                  </div>
-                  <p className="text-xs text-slate-200 leading-relaxed">
-                    {ep.content}
-                  </p>
-                  {ep.tags.length > 0 && (
-                    <div className="flex flex-wrap gap-1 pt-0.5">
-                      {ep.tags.map((t) => (
-                        <span
-                          key={t}
-                          className="px-1.5 py-0.5 rounded bg-slate-950 text-[10px] text-slate-400"
-                        >
-                          #{t}
-                        </span>
-                      ))}
-                    </div>
-                  )}
+                  ))}
                 </div>
-              ))
-            )}
+              )}
+
+              {/* UI Action Pills */}
+              {msg.ui_actions && msg.ui_actions.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 max-w-[92%] pt-0.5">
+                  {msg.ui_actions.map((act) => (
+                    <button
+                      key={act.id}
+                      type="button"
+                      onClick={() => onExecuteUIAction(act)}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#eaf3ff] hover:bg-[#d8e8ff] border border-[#3366cc]/40 text-[10px] font-mono text-[#3366cc] transition"
+                    >
+                      <Sparkles className="w-2.5 h-2.5 text-[#3366cc]" />
+                      <span>{act.type}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {isSendingChat && (
+          <div className="flex items-center gap-2 text-xs text-[#54595d] bg-[#f8f9fa] border border-[#eaecf0] rounded-lg px-3 py-2">
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-[#3366cc]" />
+            <span>Co-Curator is consulting the encyclopedia...</span>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+        <div ref={chatEndRef} />
+      </div>
+
+      {/* Chat Input Form */}
+      <form
+        onSubmit={handleChatSubmit}
+        className="p-3 bg-[#f8f9fa] border-t border-[#a2a9b1] flex items-center gap-2"
+      >
+        <input
+          type="text"
+          value={chatInput}
+          onChange={(e) => setChatInput(e.target.value)}
+          placeholder="Ask Co-Curator about this article or wiki links..."
+          className="flex-1 bg-white border border-[#a2a9b1] rounded px-3 py-1.5 text-xs text-[#202122] placeholder:text-[#72777d] focus:outline-none focus:border-[#3366cc] focus:ring-1 focus:ring-[#3366cc]"
+        />
+        <button
+          type="submit"
+          disabled={isSendingChat || !chatInput.trim()}
+          className="px-3 py-1.5 rounded bg-[#3366cc] hover:bg-[#2a4b8d] disabled:opacity-50 text-white text-xs font-medium flex items-center gap-1 transition"
+        >
+          <Send className="w-3.5 h-3.5" />
+          <span>Send</span>
+        </button>
+      </form>
+    </aside>
   );
 };

@@ -24,6 +24,9 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from google.adk.agents import Agent
+from google.adk.apps import App
+from google.adk.models import Gemini
 from google.adk.runners import Runner
 from google.genai import types
 from opentelemetry import trace
@@ -32,6 +35,21 @@ from pydantic import BaseModel, Field
 from blob.agent import app as adk_app
 from blob.agent import run_curation_pipeline
 from blob.app_utils import services
+from blob.mcp_server import (
+    get_page as mcp_get_page,
+)
+from blob.mcp_server import (
+    list_clusters as mcp_list_clusters,
+)
+from blob.mcp_server import (
+    recall as mcp_recall,
+)
+from blob.mcp_server import (
+    remember as mcp_remember,
+)
+from blob.mcp_server import (
+    traverse_graph as mcp_traverse_graph,
+)
 from blob.storage import (
     KnowledgeStore,
     WikiPage,
@@ -124,6 +142,15 @@ class ChatRequest(BaseModel):
     user_id: str = "insider-user"
     namespace: str = "default"
     view_context: dict[str, Any] | None = None
+
+
+class AssistantChatRequest(BaseModel):
+    """Payload for chatting with the MCP-connected demo assistant via `POST /api/assistant/chat`."""
+
+    message: str
+    session_id: str | None = None
+    user_id: str = "insider-user"
+    namespace: str = "default"
 
 
 def _build_page_detail_payload(
@@ -794,6 +821,241 @@ async def chat_with_blob(
         "view_context": normalized_ctx,
         "reply": reply_text,
         "ui_actions": ui_actions,
+        "tool_calls": tool_calls,
+    }
+
+
+_assistant_agent = Agent(
+    name="assistant",
+    model=Gemini(
+        model="gemini-3.8-flash",
+        retry_options=types.HttpRetryOptions(attempts=2),
+    ),
+    description=(
+        "A helpful personal and engineering assistant connected to the Blob "
+        "memory fabric via MCP."
+    ),
+    instruction=(
+        "You are a helpful, concise personal and software engineering assistant.\n\n"
+        "You are connected to **Blob** (a shared memory fabric) via MCP tools:\n"
+        "- Before answering questions about the user's projects, architecture, "
+        "preferences, or past decisions, use `recall` (and `get_page` / "
+        "`traverse_graph` when helpful) to ground your answer in stored memories.\n"
+        "- When the user shares new facts, architectural decisions, conventions, "
+        "or preferences—or asks you to remember something—call `remember` with "
+        "`source_agent='assistant'`, relevant `tags`, and `auto_curate=True` so "
+        "the Blob memory fabric ingests and curates it in the background.\n"
+        "- Always use the active `namespace` provided in the user prompt context.\n"
+        "- Speak naturally as a helpful assistant to the user (do not act as the "
+        "internal graph curator)."
+    ),
+    tools=[
+        mcp_remember,
+        mcp_recall,
+        mcp_get_page,
+        mcp_traverse_graph,
+        mcp_list_clusters,
+    ],
+)
+
+_assistant_app = App(
+    root_agent=_assistant_agent,
+    name="assistant",
+)
+
+
+def _offline_assistant_fallback(
+    message: str,
+    namespace: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Provide an MCP-tool-backed assistant response when LLM credentials are unavailable."""
+    tool_calls: list[dict[str, Any]] = []
+    lower_msg = message.lower().strip()
+    remember_triggers = (
+        "remember",
+        "note that",
+        "we decided",
+        "prefer",
+        "record",
+        "save",
+    )
+
+    if any(phrase in lower_msg for phrase in remember_triggers):
+        rem_res = mcp_remember(
+            content=message,
+            source_agent="assistant",
+            tags=["assistant", "mcp"],
+            namespace=namespace,
+            auto_curate=True,
+        )
+        tool_calls.append(
+            {
+                "name": "remember",
+                "args": {
+                    "content": message,
+                    "source_agent": "assistant",
+                    "tags": ["assistant", "mcp"],
+                    "namespace": namespace,
+                    "auto_curate": True,
+                },
+            }
+        )
+        ep_id = rem_res.get("episode_id", "ep-unknown")
+        scheduled = bool(rem_res.get("curation_scheduled", False))
+        curation_note = (
+            "Background wiki curation has been scheduled automatically."
+            if scheduled
+            else "It is queued in pending episodes for the next curation pass."
+        )
+        reply = (
+            "Got it — I've saved that to your Blob memory fabric via MCP `remember` "
+            f"(episode `{ep_id}` in namespace `{namespace}`). {curation_note}"
+        )
+        return reply, tool_calls
+
+    recall_res = mcp_recall(
+        query=message,
+        namespace=namespace,
+        top_k=3,
+        include_episodes=True,
+    )
+    tool_calls.append(
+        {
+            "name": "recall",
+            "args": {
+                "query": message,
+                "namespace": namespace,
+                "top_k": 3,
+                "include_episodes": True,
+            },
+        }
+    )
+
+    matches = recall_res.get("matches", [])
+    pending_eps = recall_res.get("pending_episodes", [])
+    sections: list[str] = []
+
+    if matches:
+        page_lines = [
+            f"- **[[{m['title']}]]** (`{m['slug']}`): {m['summary']}" for m in matches
+        ]
+        sections.append(
+            "Here is what I found in your Blob Wiki memory via MCP `recall`:\n\n"
+            + "\n".join(page_lines)
+        )
+
+    if pending_eps:
+        ep_lines = [
+            f"- `{ep['id']}` ({ep.get('source_agent', 'agent')}): {ep['content']}"
+            for ep in pending_eps[:3]
+        ]
+        sections.append("**Recent Pending Episodes:**\n" + "\n".join(ep_lines))
+
+    if sections:
+        return "\n\n".join(sections), tool_calls
+
+    return (
+        "I checked your Blob memory via MCP `recall`, but no matching Wiki pages "
+        "or episodes were found in this namespace yet. Tell me something to "
+        'remember (for example, *"Remember that we decided to use Firestore vector search"*) '
+        "and I'll store it for you!",
+        tool_calls,
+    )
+
+
+@explorer_router.post("/assistant/chat")
+async def chat_with_assistant(
+    payload: AssistantChatRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """Run an interactive chat turn with the demo `assistant` agent connected via MCP tools."""
+    cleaned_message = (payload.message or "").strip()
+    if not cleaned_message:
+        raise HTTPException(
+            status_code=400, detail="Assistant message cannot be empty."
+        )
+
+    ns = (payload.namespace or "default").strip() or "default"
+    session_id = (payload.session_id or "").strip() or f"asst-{uuid.uuid4().hex[:10]}"
+    user_id = (payload.user_id or "insider-user").strip() or "insider-user"
+    app_name = _assistant_app.name
+
+    session_service = services.get_session_service()
+    session = await session_service.get_session(
+        app_name=app_name, user_id=user_id, session_id=session_id
+    )
+    if session is None:
+        await session_service.create_session(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            state={"namespace": ns},
+        )
+    else:
+        session.state["namespace"] = ns
+
+    augmented_message = f"[Active Namespace: {ns}]\n\n{cleaned_message}"
+
+    reply_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+
+    try:
+        runner: Runner | None = getattr(request.app.state, "assistant_runner", None)
+        if runner is None:
+            runner = Runner(
+                app=_assistant_app,
+                session_service=session_service,
+                artifact_service=services.get_artifact_service(),
+                auto_create_session=True,
+            )
+            request.app.state.assistant_runner = runner
+
+        content = types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=augmented_message)],
+        )
+        async for event in runner.run_async(
+            user_id=user_id,
+            session_id=session_id,
+            new_message=content,
+        ):
+            if event.content and event.content.parts:
+                for part in event.content.parts:
+                    if getattr(part, "function_call", None) is not None:
+                        fc = part.function_call
+                        tool_calls.append(
+                            {
+                                "name": getattr(fc, "name", ""),
+                                "args": dict(getattr(fc, "args", {}) or {}),
+                            }
+                        )
+                    elif getattr(part, "text", None) and not getattr(
+                        part, "thought", False
+                    ):
+                        reply_parts.append(part.text)
+    except Exception:
+        fallback_reply, fallback_calls = _offline_assistant_fallback(
+            message=cleaned_message,
+            namespace=ns,
+        )
+        reply_parts = [fallback_reply]
+        tool_calls.extend(fallback_calls)
+
+    reply_text = "\n".join(p.strip() for p in reply_parts if p and p.strip()).strip()
+    if not reply_text:
+        fallback_reply, fallback_calls = _offline_assistant_fallback(
+            message=cleaned_message,
+            namespace=ns,
+        )
+        reply_text = fallback_reply
+        tool_calls.extend(fallback_calls)
+
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "user_id": user_id,
+        "namespace": ns,
+        "reply": reply_text,
         "tool_calls": tool_calls,
     }
 
