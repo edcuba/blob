@@ -54,14 +54,22 @@ Modern AI agents accumulate context, preferences, facts, and episodic memories a
 
 ```text
 blob/
-├── app/                       # Core ADK agent & FastAPI server
-│   ├── agent.py               # Main Blob agent definition
-│   ├── fast_api_app.py        # FastAPI backend & A2A/API entrypoint
-│   └── app_utils/             # App utilities and adapters
-├── spec/                      # Architecture & product specification drafts
-│   └── README.md              # Living design spec for Blob
+├── app/                       # Core ADK agent, MCP server, storage & FastAPI backend
+│   ├── agent.py               # Blob root_agent, wiki_curator, cluster_analyst & curation pipeline
+│   ├── fast_api_app.py        # Unified FastAPI server (ADK, A2A, /mcp, /api/*, /insider)
+│   ├── mcp_server.py          # Universal FastMCP server (/mcp & stdio)
+│   ├── api/                   # Explorer REST & SSE endpoints (/api/*)
+│   ├── storage/               # KnowledgeStore (Firestore & InMemory), parser, 768-d embeddings & seed
+│   ├── tools/                 # 13 ADK memory tools & 3 bidirectional UI tools
+│   └── app_utils/             # Shared session/artifact services, A2A & Reasoning Engine adapters
+├── frontend/                  # Vite + React + TypeScript "Insider View" UI (Graph, Wiki, Sidebar)
+├── spec/                      # Architecture, deployment & implementation specifications
+│   ├── README.md              # Architecture & design specification
+│   ├── architecture-and-deployment.md # Sequence flows, ER diagrams & GCP topology
+│   └── implementation-plan.md # 6-phase implementation plan & verification status
 ├── tests/                     # Unit, integration, and evaluation suites
-├── deployment/                # Terraform infrastructure (single-project)
+├── deployment/                # Single-project Terraform infrastructure (Agent Runtime + Firestore)
+├── Dockerfile                 # Multi-stage build (Node 22 frontend + Python 3.12 backend)
 ├── GEMINI.md                  # AI-assisted development guide
 └── pyproject.toml             # Project dependencies and tooling config
 ```
@@ -73,6 +81,7 @@ blob/
 ### Prerequisites
 
 - **uv**: Python package manager — [Install](https://docs.astral.sh/uv/getting-started/installation/)
+- **Node.js (v22+)**: For building the `frontend/` Insider View SPA
 - **agents-cli**: Google Agents CLI — Install with `uv tool install google-agents-cli`
 - **Google Cloud SDK**: For GCP services — [Install](https://cloud.google.com/sdk/docs/install)
 
@@ -89,9 +98,15 @@ blob/
    agents-cli install
    ```
 
-3. Launch the interactive local playground:
+3. Launch the interactive ADK Dev UI playground:
    ```bash
-   agents-cli playground
+   BLOB_AUTO_SEED=true agents-cli playground
+   ```
+
+4. Or launch the full unified server (serving **ADK Dev UI**, **Insider View** at `/insider`, **Explorer API** at `/api/*`, and **MCP** at `/mcp`):
+   ```bash
+   BLOB_AUTO_SEED=true uv run uvicorn app.fast_api_app:app --host 127.0.0.1 --port 8000
+   # Open http://127.0.0.1:8000/insider for the 2D Force Graph + Wiki + Co-Curation UI
    ```
 
 ---

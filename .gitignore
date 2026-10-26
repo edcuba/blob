@@ -195,6 +195,7 @@ Thumbs.db
 .adk/
 
 # Agent CLI specific
+artifacts/
 .persist_vector_store
 tests/load_test/.results/*.html
 tests/load_test/.results/*.csv

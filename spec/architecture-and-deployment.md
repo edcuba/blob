@@ -11,8 +11,8 @@ Blob runs as a unified Python FastAPI application (`app/fast_api_app.py`) exposi
 
 1. **Universal MCP Server (`/mcp` HTTP/SSE & `stdio`)**: Connects external agents (IDE assistants, CLI tools, custom workflows) to the shared memory fabric.
 2. **Explorer REST & SSE API (`/api/*`)**: Powers the visual graph canvas, Markdown wiki CRUD, 1-click curation suggestions, and real-time UI event streaming.
-3. **ADK & A2A Agent Endpoints (`/run_sse`, `/a2a/app`, `/api/reasoning_engine`)**: Serves the conversational `blob` agent and multi-agent A2A protocol.
-4. **"Insider View" Static SPA (`/`)**: Serves the compiled React + TypeScript (Vite) frontend bundle (`frontend/dist`).
+3. **ADK & A2A Agent Endpoints (`/run_sse`, `/a2a/app`, `/api/reasoning_engine`)**: Serves the conversational `blob` agent, ADK Dev UI (`/`), and multi-agent A2A protocol.
+4. **"Insider View" Static SPA (`/insider`)**: Serves the compiled React + TypeScript (Vite) frontend bundle (`frontend/dist`) alongside the ADK Dev UI without route collisions.
 
 ```mermaid
 flowchart TB
@@ -357,35 +357,22 @@ flowchart TB
 
 ---
 
-### 4.3 Serving Topologies on GCP: Agent Runtime vs. Cloud Run
+### 4.3 Serving Topology on GCP: Vertex AI Agent Runtime
 
-Because the container (`Dockerfile` running `uvicorn app.fast_api_app:app --host 0.0.0.0 --port 8080`) packages the **ADK Agent**, **A2A Server**, **MCP Server (`/mcp`)**, **Explorer API (`/api/*`)**, and **React UI (`frontend/dist`)** into a single image, it can be deployed in two ways depending on how you want to access the Web UI:
+The unified container (`Dockerfile` running `uvicorn app.fast_api_app:app --host 0.0.0.0 --port 8080`) packages the **ADK Agent**, **A2A Server**, **MCP Server (`/mcp`)**, **Explorer API (`/api/*`)**, and **React UI (`frontend/dist`)** and deploys to **Vertex AI Agent Runtime** (`deployment_target: "agent_runtime"`):
 
 ```mermaid
 flowchart LR
-    subgraph OptionA["Option A: Agent Runtime Only (Current Scaffold Default)"]
-        direction TB
-        CLI_A["MCP / A2A / ADK Client\n(with GCP IAM Bearer Token)"] -->|"HTTPS + OAuth Header"| AR_Pass["Vertex AI /api Passthrough\n.../reasoningEngines/{id}/api/*"]
-        LocalUI_A["Local Browser UI\n(localhost:8000 or Vite)"] -->|"Connects to same Firestore"| FS_A[("Cloud Firestore")]
-        AR_Pass --> AR_Container["Agent Runtime Container\n(fast_api_app.py)"]
-        AR_Container --> FS_A
-    end
-
-    subgraph OptionB["Option B: Cloud Run Target (Direct Browser UI + IAP + MCP)"]
-        direction TB
-        Browser_B["Human Browser\n('Insider View' UI)"] -->|"HTTPS (Cloud IAP / Auth)"| CRun["Cloud Run Service\nhttps://blob-{hash}.run.app"]
-        MCP_B["External MCP / A2A Clients"] -->|"HTTPS /mcp & /a2a/app"| CRun
-        CRun --> FS_B[("Cloud Firestore")]
-    end
+    CLI["MCP / A2A / ADK Client\n(with GCP IAM Bearer Token)"] -->|"HTTPS + OAuth Header"| AR_Pass["Vertex AI /api Passthrough\n.../reasoningEngines/{id}/api/*"]
+    LocalUI["Local Browser UI\n(localhost:8000 /insider)"] -->|"Connects to same Firestore"| FS[("Cloud Firestore")]
+    AR_Pass --> AR_Container["Agent Runtime Container\n(fast_api_app.py)"]
+    AR_Container --> FS
 ```
 
-- **Option A — Agent Runtime (`deployment_target: "agent_runtime"`, current default)**:
-  - Managed Vertex AI Reasoning Engine deployment via `agents-cli deploy`.
-  - Exposes all FastAPI routes under `https://{region}-aiplatform.googleapis.com/reasoningEngines/v1/projects/{project}/locations/{region}/reasoningEngines/{id}/api/{route}` (authenticated via Google Cloud IAM Bearer tokens).
-  - Ideal for Gemini platform registration (`agents-cli publish gemini`), A2A calls, and IAM-authenticated MCP clients, while the React UI can be run locally (`agents-cli playground` / `uvicorn`) connected to the same Cloud Firestore database or hosted as a decoupled Cloud Run UI.
-- **Option B — Cloud Run (`agents-cli scaffold enhance . --deployment-target cloud_run`)**:
-  - Deploys the exact same `Dockerfile` to Cloud Run with a direct `https://blob-....run.app` URL.
-  - Allows opening the **"Insider View" React UI** directly in any browser (optionally protected with Google sign-in via `--iap`).
+- **Managed Vertex AI Reasoning Engine (`deployment_target: "agent_runtime"`)**:
+  - Deployed via `agents-cli deploy` into the single GCP project provisioned by `deployment/terraform/single-project/`.
+  - Exposes FastAPI routes under `https://{region}-aiplatform.googleapis.com/reasoningEngines/v1/projects/{project}/locations/{region}/reasoningEngines/{id}/api/{route}` (authenticated via Google Cloud IAM Bearer tokens).
+  - Supports Gemini platform registration (`agents-cli publish gemini`), A2A calls, and IAM-authenticated MCP clients, while the **"Insider View" React UI** (`/insider`) can be opened locally via `agents-cli playground` / `uvicorn` connected to the same Cloud Firestore database.
 
 ---
 
@@ -393,7 +380,10 @@ flowchart LR
 
 1. **Local Development & Interactive Testing**:
    ```bash
-   # Uses InMemoryKnowledgeStore by default, or Firestore when GOOGLE_CLOUD_PROJECT is set
+   # Uses InMemoryKnowledgeStore by default (BLOB_STORAGE_BACKEND=memory),
+   # or Firestore when BLOB_STORAGE_BACKEND=firestore is set.
+   # Embeddings use GenAI with output_dimensionality=768 and GOOGLE_CLOUD_EMBEDDING_LOCATION=us-east1
+   # (failing fast in production if misconfigured; BLOB_EMBEDDING_BACKEND=hash is for unit tests only).
    agents-cli install
    agents-cli playground
    ```
@@ -421,3 +411,82 @@ flowchart LR
    # Deploy container to configured target
    agents-cli deploy
    ```
+
+---
+
+## 6. Deep-Dive Coverage Across Core Engineering Pillars
+
+### 6.1 Tool & Interface Design
+| Surface | Module | Tools / Endpoints | Error & Schema Contract |
+| :--- | :--- | :--- | :--- |
+| **MCP Server** | `app/mcp_server.py` (`/mcp` & `stdio`) | Tools: `remember`, `recall`, `get_page`, `traverse_graph`, `list_clusters`, `curate`<br>Resources: `blob://wiki/{ns}/{slug}`, `blob://clusters/{ns}`, `blob://graph/{ns}` | Typed Pydantic/FastMCP schemas; returns structured dicts (`status`, `data`, `provenance`) |
+| **ADK Memory Tools** | `app/tools/memory_tools.py` | `remember_episode`, `recall_knowledge`, `get_wiki_page`, `upsert_wiki_page`, `delete_wiki_page`, `list_pending_episodes`, `mark_episodes_synthesized`, `get_graph_neighborhood`, `list_semantic_clusters`, `recompute_semantic_clusters`, `update_cluster_metadata`, `create_curation_suggestion`, `resolve_curation_suggestion` | Idempotent writes; automatic `[[wikilink]]` parsing, ghost-node creation, and backlink updates; returns `{"status": "ok"\|"error", ...}` |
+| **ADK UI Tools** | `app/tools/ui_tools.py` | `ui_navigate_to_page(slug)`, `ui_highlight_graph_nodes(slugs, reason)`, `ui_focus_cluster(cluster_id)` | Pushes `UIActionEvent` to both `EventBus` (`/api/events`) and turn collector (`/api/chat`) |
+| **Explorer REST & SSE** | `app/api/explorer_routes.py` (`/api/*`) | `GET /api/graph`, `GET/PUT/DELETE /api/pages/{slug}`, `GET/POST /api/episodes`, `POST /api/curate`, `POST /api/suggestions/{id}/apply\|dismiss`, `POST /api/seed`, `POST /api/chat`, `GET /api/events` | FastAPI Pydantic request/response models; SSE heartbeats + JSON event frames |
+| **ADK / A2A / SPA** | `app/fast_api_app.py` | `/`, `/run_sse`, `/a2a/app`, `/api/reasoning_engine`, `/api/stream_reasoning_engine`, `/insider` | Preserves native ADK Web, A2A v1.0 + v0.3 card compatibility, and Reasoning Engine adapter |
+
+### 6.2 Context & Memory Architecture
+- **Session & Artifact Services (`app/app_utils/services.py`)**:
+  - `SESSION_SERVICE_URI = "shared://session"` resolves to `VertexAiSessionService` on Agent Runtime (`GOOGLE_CLOUD_AGENT_ENGINE_ID`) or `InMemorySessionService` locally, ensuring sessions created on `/run_sse`, `/a2a/app`, `/api/stream_reasoning_engine`, or `/api/chat` share state.
+  - `ARTIFACT_SERVICE_URI = "shared://artifact"` resolves to `GcsArtifactService` when `LOGS_BUCKET_NAME` is configured, or `InMemoryArtifactService` locally.
+- **KnowledgeStore & Fail-Fast Embeddings (`app/storage/`)**:
+  - `BLOB_STORAGE_BACKEND` (`memory` | `firestore` | `auto`) selects `InMemoryKnowledgeStore` for local/test runs and `FirestoreKnowledgeStore` when `BLOB_STORAGE_BACKEND=firestore` or on Agent Runtime.
+  - `GenAIEmbedder` calls `google-genai` with `output_dimensionality=768` and `GOOGLE_CLOUD_EMBEDDING_LOCATION` (defaulting to `us-east1`). **Missing or failing embedders in production raise an explicit exception** (never silently degrading to random/hash vectors); `DeterministicHashEmbedder` is restricted strictly to unit tests (`BLOB_EMBEDDING_BACKEND=hash`).
+- **Active View Context Injection**:
+  - `POST /api/chat` accepts `view_context` (`active_page_slug`, `selected_cluster_id`, `visible_neighbors`, `namespace`), persists it into `session.state["view_context"]`, and prepends a compact context header to the user message so `blob` can resolve references like *"why does this page exist?"* or *"what links here?"* immediately.
+
+### 6.3 Orchestration & Logic
+- **Coordinator + `AgentTool` Sub-Agents (`app/agent.py`)**:
+  - `root_agent` (`name="blob"`, `model="gemini-3.8-flash"`) wraps `wiki_curator` and `cluster_analyst` via `AgentTool(agent=...)` rather than `sub_agents` handoff. This guarantees `root_agent` retains control of the turn after invoking a sub-agent, allowing it to call `ui_highlight_graph_nodes` or `ui_navigate_to_page` before streaming the final answer.
+  - Background curation (`POST /api/curate` and MCP `curate`) invokes `run_curation_pipeline(namespace, focus_slug)`, which executes `wiki_curator` to synthesize `pending_curation` episodes and then `cluster_analyst` to refresh clusters and 2D layout coordinates.
+
+### 6.4 Observability & Tracing
+```mermaid
+flowchart LR
+    subgraph Runtime["Blob FastAPI + ADK Container"]
+        ADKSpan["ADK & OTel Instrumentor\n(invoke_workflow / invoke_agent / execute_tool)"]
+        CustomSpan["Custom Blob Spans\n(mcp.tool, blob.embed, blob.store)"]
+        CompHook["GenAI Completion Hook\n(OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK=upload)"]
+        StdoutLog["Structured JSON stdout\n(gen_ai.client.inference.operation.details)"]
+    end
+
+    subgraph GCPTelemetry["GCP Observability Stack (telemetry.tf & storage.tf)"]
+        CloudTrace["Cloud Trace\n(Latency & Span Trees; NO_CONTENT)"]
+        GCSBucket[("GCS Logs Bucket\ngs://{project}-blob-logs/completions/*.jsonl")]
+        LogSink["Cloud Logging Sink\n(genai_logs_to_bq)"]
+        BQTable[("BQ Partitioned Table\naiplatform_googleapis_com_reasoning_engine_stdout")]
+        BQExt[("BQ External Table\nblob_telemetry.completions")]
+        BQView[("BQ Joined View\nblob_telemetry.completions_view")]
+    end
+
+    ADKSpan & CustomSpan --> CloudTrace
+    CompHook --> GCSBucket
+    StdoutLog --> LogSink
+    LogSink --> BQTable
+    GCSBucket --> BQExt
+    BQTable & BQExt --> BQView
+```
+
+### 6.5 Single-Project Infrastructure & Deployment Workflow
+```mermaid
+flowchart LR
+    subgraph Verify["1. Local Verification Gate"]
+        Lint["agents-cli lint\n(ruff, ty, codespell)"]
+        Tests["uv run pytest\ntests/unit tests/integration"]
+        Eval["agents-cli eval run\n(Quality Gate)"]
+        Lint --> Tests --> Eval
+    end
+
+    subgraph Provision["2. Single-Project Terraform"]
+        TF["agents-cli infra single-project --apply\n(apis + iam + firestore + telemetry + service)"]
+    end
+
+    subgraph Deploy["3. Agent Runtime Deployment"]
+        Gate["Human Approval Gate"]
+        DeployCmd["agents-cli deploy\n(Build Multi-Stage Dockerfile & Deploy to Agent Runtime)"]
+        Gate --> DeployCmd
+    end
+
+    Verify --> Provision --> Deploy
+```
+- **Single-Project Deployment**: Provision all GCP infrastructure in a single project via `agents-cli infra single-project --apply` (`deployment/terraform/single-project/`) and deploy the multi-stage container to Vertex AI Agent Runtime via `agents-cli deploy`.

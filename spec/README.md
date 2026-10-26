@@ -1,8 +1,10 @@
 # Blob — Architecture & Design Specification
 
-> **Status:** Approved Design Specification
+> **Status:** Implemented & Verified
 > **Mission:** *"Blob is a memory fabric agent organizing the knowledge and memories of past interactions in a visual way."*
-> **Deep-Dive Companion:** See [`spec/architecture-and-deployment.md`](architecture-and-deployment.md) for detailed sequence diagrams, state machines, ER diagrams, and the GCP Terraform/deployment plan.
+> **Deep-Dive Companions:**
+> - [`spec/architecture-and-deployment.md`](architecture-and-deployment.md) — Detailed sequence diagrams, state machines, ER diagrams, and GCP Terraform/deployment architecture.
+> - [`spec/implementation-plan.md`](implementation-plan.md) — Five-pillar engineering coverage and 6-phase implementation plan.
 
 ---
 
@@ -71,16 +73,16 @@ flowchart TB
 
 | Area | Decision | Details |
 | :--- | :--- | :--- |
-| **1. Cloud Storage** | **Firestore Single Source of Truth** | Firestore stores `episodes`, `wiki_pages` (Markdown body + metadata + graph edges), `clusters`, and `curation_suggestions` with Firestore Native Vector Search (`VectorValue` / `find_nearest`). YAML frontmatter + Markdown is serialized on the fly when needed. |
-| **2. Local & Test Abstraction** | **`KnowledgeStore` Interface + Seed Data** | `app/storage/` defines a unified `KnowledgeStore` protocol with `FirestoreKnowledgeStore` (production/GCP) and `InMemoryKnowledgeStore` (unit/integration tests, offline dev, and instant seeded demo data). |
+| **1. Cloud Storage** | **Firestore Single Source of Truth** | Firestore stores `episodes`, `wiki_pages` (Markdown body + metadata + graph edges), `clusters`, and `curation_suggestions` with Firestore Native Vector Search (`VectorValue` / `find_nearest`, `dimension=768`). YAML frontmatter + Markdown is serialized on the fly when needed. |
+| **2. Local & Test Abstraction** | **`KnowledgeStore` Interface + `BLOB_STORAGE_BACKEND`** | `app/storage/` defines a unified `KnowledgeStore` protocol with `FirestoreKnowledgeStore` and `InMemoryKnowledgeStore`. Controlled by `BLOB_STORAGE_BACKEND` (`memory` \| `firestore` \| `auto`): defaults to `memory` in local dev and when `INTEGRATION_TEST=TRUE`, and selects `firestore` when `BLOB_STORAGE_BACKEND=firestore` or on Agent Runtime (`GOOGLE_CLOUD_AGENT_ENGINE_ID` set). |
 | **3. Ingestion & Curation** | **Two-Stage Async Pipeline** | 1. **Fast Ingest**: `remember` writes a raw `Episode` with its embedding to Firestore (`status="pending_curation"`) so it is immediately searchable (`<200ms`).<br>2. **Agentic Curation**: Background task (or explicit `curate` call) runs `wiki_curator` to synthesize pending episodes into Markdown `wiki_pages`, extract `[[wikilinks]]`, and resolve contradictions. |
-| **4. Graph & Ghost Nodes** | **Obsidian-Faithful `[[Wiki Links]]` + Frontmatter Relations** | Inline `[[Page Title]]` or `[[slug\|Display]]` links are parsed on save. Links to pages that do not yet exist create lightweight **Ghost Nodes** (`status="ghost"`) in the graph, which can be synthesized into full pages on click or during curation. YAML frontmatter also supports typed `relations` (`part_of`, `depends_on`, `contradicts`, `relates_to`). |
-| **5. Semantic Clustering** | **Hybrid Vector Clustering + ADK Naming** | Page embeddings are grouped into semantic clusters (with 2D `(x, y)` coordinates for map layout), and `cluster_analyst` generates human-readable cluster titles, summaries, colors, and Map-of-Content (`MOC`) overview pages. |
-| **6. MCP Surface** | **FastAPI `/mcp` + `stdio` Entrypoint** | Built with the `mcp` SDK (`FastMCP`), mounted at `/mcp` on FastAPI and runnable via `uv run python -m app.mcp_server`. Exposes Tools (`remember`, `recall`, `get_page`, `traverse_graph`, `list_clusters`, `curate`) and Resources (`blob://wiki/{slug}`, `blob://clusters`, `blob://graph`). |
+| **4. Graph & Ghost Nodes** | **Obsidian-Faithful `[[Wiki Links]]` + Frontmatter Relations** | Inline `[[Page Title]]` or `[[slug\|Display]]` links are parsed on save, resolving against existing pages by slug or case-insensitive `title` before creating lightweight **Ghost Nodes** (`status="ghost"`) for referenced-but-unwritten pages (and deduplicating ghosts when a page is later created with a custom slug). Primary `recall()` matches return `status="active"` pages while surfacing connected active and ghost nodes in 1-hop `neighbors`. YAML frontmatter also supports typed `relations` (`part_of`, `depends_on`, `contradicts`, `relates_to`). |
+| **5. Embeddings & Clustering** | **Fail-Fast 768-d Embeddings + Hybrid Clustering** | Uses `google-genai` (`gemini-embedding-001` / `text-embedding-005`) with explicit `output_dimensionality=768` and `GOOGLE_CLOUD_EMBEDDING_LOCATION` (defaulting to `us-east1`). Missing or failing embedders in production raise an explicit error (no silent fallback; deterministic hash embeddings are strictly opt-in for unit tests via `BLOB_EMBEDDING_BACKEND=hash`). `cluster_analyst` generates human-readable cluster titles, summaries, colors, and Map-of-Content (`MOC`) overview pages. |
+| **6. MCP Surface** | **FastAPI `/mcp` + `stdio` Entrypoint** | Built with the `mcp` SDK (`FastMCP`), mounted at `/mcp` on FastAPI and runnable via `uv run python -m app.mcp_server`. Exposes Tools (`remember`, `recall`, `get_page`, `traverse_graph`, `list_clusters`, `curate`) and Resources (`blob://wiki/{namespace}/{slug}`, `blob://clusters/{namespace}`, `blob://graph/{namespace}`). |
 | **7. Scoping & Provenance** | **Unified Graph + Optional `namespace`** | Defaults to `namespace="default"` so memories cross-pollinate across external agents, while supporting custom namespaces and recording `source_agent`, `interaction_id`, and timestamps on every episode and wiki revision. |
-| **8. ADK Agent Hierarchy** | **Root `blob` + Specialized Sub-Agents** | `root_agent` (`name="blob"`) acts as the interactive guide and co-curator, delegating synthesis and clustering tasks to `wiki_curator` and `cluster_analyst` sub-agents. |
-| **9. Frontend Stack** | **React + TypeScript (Vite) in `frontend/`** | Split-pane Obsidian-inspired UI (2D Force Graph/Cluster Canvas + Markdown Wiki Reader/Editor + Agent Sidebar). Built static assets are served by FastAPI in production. |
-| **10. Agent-in-the-Loop UX** | **Bidirectional Context & UI Actions** | The UI sends active view state (`active_page_slug`, `selected_cluster_id`, `visible_neighbors`) with every chat turn. `blob` can emit structured UI commands (`navigate_to_page`, `highlight_nodes`, `focus_cluster`, `refresh_page`) and surface 1-click curation suggestions on pages. |
+| **8. ADK Agent Hierarchy** | **Root `blob` + `AgentTool` Sub-Agents** | `root_agent` (`name="blob"`) acts as the interactive guide and co-curator, invoking `wiki_curator` and `cluster_analyst` via `AgentTool` so `blob` retains turn control to emit UI actions afterward (while `wiki_curator` and `cluster_analyst` are also directly invocable for background `/api/curate` and MCP `curate` runs). |
+| **9. Frontend Stack** | **React + TypeScript (Vite) at `/insider`** | Split-pane Obsidian-inspired UI (2D Force Graph/Cluster Canvas + Markdown Wiki Reader/Editor + Agent Sidebar) in `frontend/`. Built static assets (`frontend/dist`) are served by FastAPI at `/insider` alongside ADK's Dev UI (`/`), and built via a multi-stage `Dockerfile`. |
+| **10. Agent-in-the-Loop UX** | **Bidirectional Context & Dual UI Action Delivery** | The UI sends active view state (`active_page_slug`, `selected_cluster_id`, `visible_neighbors`) with every chat turn. `blob` emits structured UI commands (`navigate_to_page`, `highlight_nodes`, `focus_cluster`, `refresh_page`) delivered over both `GET /api/events` (SSE) and the `POST /api/chat` response payload, and surfaces 1-click curation suggestions on pages. |
 
 ---
 
@@ -190,3 +192,57 @@ Blob uses **Cloud Firestore** as its single source of truth for documents, graph
 - `POST /api/suggestions/{id}/apply` & `POST /api/suggestions/{id}/dismiss`: 1-click co-curation actions.
 - `POST /api/seed`: Populate the store with a rich multi-cluster demo dataset for interactive exploration.
 - `GET /api/events`: Server-Sent Events (SSE) stream notifying the frontend of live page edits, graph updates, and agent UI commands (`highlight_nodes`, `navigate_to_page`, `focus_cluster`).
+
+---
+
+## 6. Five-Pillar Design Matrix
+
+To ensure complete end-to-end engineering coverage, the architecture is organized around five core design pillars (detailed in [`spec/architecture-and-deployment.md`](architecture-and-deployment.md)):
+
+### 6.1 Tool & Interface Design
+- **Four Serving Surfaces on One FastAPI Process (`app/fast_api_app.py`)**:
+  1. **Universal MCP Surface (`app/mcp_server.py` at `/mcp` & `stdio`)**: 6 typed tools (`remember`, `recall`, `get_page`, `traverse_graph`, `list_clusters`, `curate`) + 3 `blob://` resources (`wiki`, `clusters`, `graph`).
+  2. **ADK Agent Toolsets (`app/tools/`)**:
+     - `memory_tools.py` (13 tools for episode ingestion, hybrid recall, wiki CRUD, link/backlink indexing, cluster recomputation, and curation suggestions).
+     - `ui_tools.py` (3 tools: `ui_navigate_to_page`, `ui_highlight_graph_nodes`, `ui_focus_cluster`).
+     - All tools return structured dictionaries (`{"status": "ok" | "error", ...}`) with rich docstrings for deterministic LLM schema generation and graceful error recovery.
+  3. **Explorer REST & SSE API (`app/api/explorer_routes.py` at `/api/*`)**: Powers the React graph canvas, Markdown editor, 1-click curation suggestions, contextual chat (`POST /api/chat`), and real-time SSE event stream (`GET /api/events`).
+  4. **ADK, A2A & Static UI Surface**: Preserves `/`, `/run_sse`, `/a2a/app` (A2A v1.0 + v0.3 compat), and `/api/stream_reasoning_engine`, while mounting the compiled React SPA (`frontend/dist`) at `/insider`.
+
+### 6.2 Context & Memory
+- **Two-Tier Memory Architecture**:
+  1. **Short-Term Session & Artifact State (`app/app_utils/services.py`)**: Process-wide `shared://session` (`VertexAiSessionService` on Agent Runtime, `InMemorySessionService` locally) and `shared://artifact` (`GcsArtifactService` when `LOGS_BUCKET_NAME` is set, else `InMemoryArtifactService`) shared across ADK Web, A2A, Reasoning Engine, and `/api/chat`.
+  2. **Long-Term Knowledge Fabric (`app/storage/`)**:
+     - **Episodic Store (`episodes`)**: Raw interaction notes embedded immediately via `GenAIEmbedder` (`output_dimensionality=768`, `GOOGLE_CLOUD_EMBEDDING_LOCATION=us-east1`, fail-fast in production; `DeterministicHashEmbedder` restricted strictly to unit tests via `BLOB_EMBEDDING_BACKEND=hash`).
+     - **Semantic Wiki & Graph (`wiki_pages`)**: Markdown + YAML frontmatter, parsed `[[Wiki Links]]`, automatic **Ghost Nodes** (`status="ghost"`), bidirectional `backlinks`, and typed `relations`.
+     - **Semantic Clusters (`clusters`) & Co-Curation Queue (`curation_suggestions`)**.
+- **Active Viewport Context Injection**: Every turn sent via `POST /api/chat` injects `view_context` (`active_page_slug`, `selected_cluster_id`, `visible_neighbors`, `namespace`) into `session.state` and the prompt context so `blob` has live situational awareness of what the human is inspecting.
+- **Namespace Scoping & Provenance**: Shared `namespace="default"` by default (with custom namespace isolation) and full provenance (`episode_id`, `source_agent`, `interaction_id`, `timestamp`) on every synthesized page.
+
+### 6.3 Orchestration & Logic
+- **`AgentTool` Coordinator Pattern (`app/agent.py`)**:
+  - `root_agent` (`name="blob"`, `model="gemini-3.8-flash"`) acts as the stateful coordinator and wraps `wiki_curator` and `cluster_analyst` using `google.adk.tools.AgentTool`.
+  - Using `AgentTool` (rather than full turn transfer via `sub_agents`) ensures `blob` retains turn control after sub-agent synthesis/clustering so it can immediately invoke UI tools (`ui_highlight_graph_nodes`, `ui_navigate_to_page`, `ui_focus_cluster`) and summarize changes in a single turn.
+- **Two-Stage Async Curation Pipeline**:
+  - **Stage 1 (Sync `<200ms`)**: `remember` embeds and writes `Episode(status="pending_curation")` and emits an `episode_created` SSE event.
+  - **Stage 2 (Async / On-Demand)**: `run_curation_pipeline(namespace, focus_slug)` runs `wiki_curator` to synthesize episodes into linked Markdown pages and materialize ghost nodes, then triggers `cluster_analyst` to recompute 2D cluster coordinates and summaries, emitting a `graph_updated` SSE event.
+- **Dual UI Action Delivery**: `ui_*` tools publish `UIActionEvent` payloads simultaneously to the SSE `EventBus` (`GET /api/events`) and the turn-scoped action list returned in `POST /api/chat`.
+
+### 6.4 Observability & Tracing
+- **Cloud Trace (OpenTelemetry)**:
+  - Enabled via `get_fast_api_app(..., otel_to_cloud=otel_to_cloud)` in `app/fast_api_app.py` and gated on `GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY` in Agent Runtime.
+  - Captures ADK span hierarchy (`invoke_workflow` $\rightarrow$ `invoke_agent` $\rightarrow$ `call_llm` / `generate_content` & `execute_tool`) with `gen_ai.agent.name="blob"`, supplemented by custom spans for MCP tool calls, 768-d embedding requests, and `KnowledgeStore` curation passes.
+- **Prompt-Response Logging & Privacy Controls (`telemetry.tf` & `service.tf`)**:
+  - Full GenAI completions are exported as NDJSON to GCS (`gs://{project_id}-blob-logs/completions`) via `OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK=upload` and surfaced in BigQuery (`blob_telemetry.completions` external table + `blob_telemetry.completions_view`).
+  - Trace spans keep message bodies off (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=NO_CONTENT`, `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS=false`) to prevent PII/payload bloat in Cloud Trace.
+- **Structured Logging & Continuous Evaluation**:
+  - Cloud Logging sink (`genai_logs_to_bq`) routes inference logs to partitioned BigQuery table `aiplatform_googleapis_com_reasoning_engine_stdout`.
+  - Pre-deployment quality gates run `agents-cli eval run` (`custom_response_quality` LLM-as-judge + `agent_turn_count` in `tests/eval/eval_config.yaml`).
+
+### 6.5 Infrastructure & Single-Project Deployment
+- **Declarative Single-Project Terraform (`deployment/terraform/single-project/`)**:
+  - Provisions required APIs (`apis.tf` including `firestore.googleapis.com`), IAM roles (`iam.tf` & `variables.tf` granting `roles/datastore.user` to `vertex_sa` and `AGENT_IDENTITY`), Cloud Firestore `(default)` database + 768-dim composite vector indexes (`firestore.tf`), Vertex AI Agent Runtime (`service.tf`), and GCS/BigQuery telemetry pipeline (`storage.tf`, `telemetry.tf`).
+- **Multi-Stage Container Build (`Dockerfile`)**:
+  - Stage 1 (`node:22-slim`) compiles `frontend/` into `frontend/dist`; Stage 2 (`python:3.12-slim` + `uv sync --frozen`) packages `app/` and `frontend/dist` into a unified image serving port `8080`.
+- **Single-Project Deployment Workflow (`agents-cli`)**:
+  - Verified locally with `agents-cli lint`, `uv run pytest tests/unit tests/integration`, and `agents-cli eval run`, then provisioned via `agents-cli infra single-project --apply` and deployed to Vertex AI Agent Runtime via `agents-cli deploy`.
