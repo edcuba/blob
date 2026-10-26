@@ -12,6 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+FROM node:22-slim AS frontend-build
+
+WORKDIR /frontend
+
+COPY ./frontend/package*.json ./
+
+RUN npm install
+
+COPY ./frontend ./
+
+RUN npm run build
+
+
 FROM python:3.12-slim
 
 # Install uv
@@ -22,6 +35,7 @@ WORKDIR /code
 COPY ./pyproject.toml ./README.md ./uv.lock* ./
 
 COPY ./app ./app
+COPY --from=frontend-build /frontend/dist ./frontend/dist
 
 RUN uv sync --frozen
 
