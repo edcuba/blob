@@ -46,6 +46,8 @@ import os
 
 from google.adk.plugins.base_plugin import BasePlugin
 
+from blob.app_utils.structured_logging import log_event
+
 logger = logging.getLogger(__name__)
 
 MODEL_ARMOR_TEMPLATE_ENV = "BLOB_MODEL_ARMOR_TEMPLATE"
@@ -66,9 +68,11 @@ def build_guardrail_plugins() -> list[BasePlugin]:
     """
     template = os.environ.get(MODEL_ARMOR_TEMPLATE_ENV, "").strip()
     if not template:
-        logger.info(
-            "Model Armor guardrails disabled: %s is not set.",
-            MODEL_ARMOR_TEMPLATE_ENV,
+        log_event(
+            logger,
+            "guardrails.config",
+            enabled=False,
+            reason=f"{MODEL_ARMOR_TEMPLATE_ENV} is not set",
         )
         return []
 
@@ -86,5 +90,12 @@ def build_guardrail_plugins() -> list[BasePlugin]:
         # content through.
         block_on_screening_failure=True,
     )
-    logger.info("Model Armor guardrails enabled with template %s.", template)
+    log_event(
+        logger,
+        "guardrails.config",
+        enabled=True,
+        template=template,
+        deidentify=config.deidentify_sensitive_data,
+        block_on_screening_failure=True,
+    )
     return [ModelArmorPlugin(config=config)]

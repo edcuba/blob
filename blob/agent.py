@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 from typing import Any
 
 from google.adk.agents import Agent
@@ -25,7 +27,12 @@ from google.adk.tools import AgentTool
 from opentelemetry import trace
 
 from blob.app_utils.guardrails import build_guardrail_plugins
+from blob.app_utils.intent_logging import IntentOutcomeLoggingPlugin
 from blob.app_utils.model_router import FAST_MODEL, gemini_for_agent
+from blob.app_utils.structured_logging import (
+    configure_structured_logging,
+    log_event,
+)
 from blob.storage import (
     Episode,
     WikiPage,
@@ -46,6 +53,11 @@ from blob.tools import (
 MODEL = FAST_MODEL
 
 tracer = trace.get_tracer(__name__)
+# JSON logs on stdout, correlated with OpenTelemetry trace/span ids. This is
+# configured here so the playground, FastAPI server, and Agent Runtime all
+# share it.
+configure_structured_logging()
+logger = logging.getLogger(__name__)
 _TOKEN_RE = re.compile(r"[a-z0-9]{3,}")
 
 
@@ -155,9 +167,12 @@ root_agent = Agent(
 app = App(
     root_agent=root_agent,
     name="blob",
-    # Model Armor PII de-identification + prompt-injection screening; also
-    # covers the AgentTool-wrapped sub-agents.
-    plugins=build_guardrail_plugins(),
+    # Intent-vs-outcome structured logging comes first. It only observes and
+    # always returns None, so it sees every callback before Model Armor can
+    # short-circuit the chain. Model Armor then handles PII de-identification
+    # and prompt-injection screening. Both plugins also cover the
+    # AgentTool-wrapped sub-agents.
+    plugins=[IntentOutcomeLoggingPlugin(), *build_guardrail_plugins()],
 )
 
 
@@ -217,6 +232,14 @@ async def run_curation_pipeline(
         span.set_attribute("blob.namespace", ns)
         if norm_focus:
             span.set_attribute("blob.focus_slug", norm_focus)
+        started = time.monotonic()
+        log_event(
+            logger,
+            "curation.intent",
+            namespace=ns,
+            focus_slug=norm_focus,
+            intent="materialize_focus" if norm_focus else "synthesize_pending",
+        )
 
         store = get_knowledge_store()
         synthesized_episodes: list[str] = []
@@ -479,6 +502,26 @@ async def run_curation_pipeline(
                 "clusters": [c.id for c in clusters],
             },
             namespace=ns,
+        )
+
+        span.set_attribute("blob.curation.synthesized_count", len(synthesized_episodes))
+        span.set_attribute("blob.curation.updated_pages_count", len(updated_pages))
+        log_event(
+            logger,
+            "curation.outcome",
+            namespace=ns,
+            focus_slug=norm_focus,
+            intent="materialize_focus" if norm_focus else "synthesize_pending",
+            status="ok",
+            pending_episodes=len(pending),
+            synthesized_episodes=len(synthesized_episodes),
+            unsynthesized_episodes=len(
+                [e for e in pending if e.id not in synthesized_episodes]
+            ),
+            updated_pages=updated_pages,
+            clusters=len(clusters),
+            intent_fulfilled=bool(updated_pages) or not pending,
+            duration_ms=round((time.monotonic() - started) * 1000, 1),
         )
 
         return {
