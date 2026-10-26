@@ -45,6 +45,7 @@ variable "app_sa_roles" {
     "roles/cloudtrace.agent",
     "roles/storage.admin",
     "roles/serviceusage.serviceUsageConsumer",
+    "roles/datastore.user",
   ]
 }
 
@@ -65,5 +66,6 @@ variable "agent_identity_roles" {
     "roles/logging.logWriter",
     "roles/monitoring.metricWriter",
     "roles/cloudtrace.agent",
+    "roles/datastore.user",
   ]
 }
