@@ -96,6 +96,14 @@ resource "google_vertex_ai_reasoning_engine" "app" {
         name  = "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY"
         value = "true"
       }
+
+      # Model Armor guardrails (PII de-identification, prompt-injection screening).
+      # deployment_spec is in ignore_changes, so this applies on create only; for
+      # existing agents pass it via `agents-cli deploy --update-env-vars`.
+      env {
+        name  = "BLOB_MODEL_ARMOR_TEMPLATE"
+        value = local.model_armor_template_name
+      }
     }
 
     source_code_spec {
@@ -120,5 +128,8 @@ resource "google_vertex_ai_reasoning_engine" "app" {
   }
 
   # Make dependencies conditional to avoid errors.
-  depends_on = [google_project_service.services]
+  depends_on = [
+    google_project_service.services,
+    google_model_armor_template.guardrails,
+  ]
 }

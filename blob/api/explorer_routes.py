@@ -26,7 +26,6 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from google.adk.agents import Agent
 from google.adk.apps import App
-from google.adk.models import Gemini
 from google.adk.runners import Runner
 from google.genai import types
 from opentelemetry import trace
@@ -35,6 +34,8 @@ from pydantic import BaseModel, Field
 from blob.agent import app as adk_app
 from blob.agent import run_curation_pipeline
 from blob.app_utils import services
+from blob.app_utils.guardrails import build_guardrail_plugins
+from blob.app_utils.model_router import gemini_for_agent
 from blob.mcp_server import (
     get_page as mcp_get_page,
 )
@@ -827,10 +828,8 @@ async def chat_with_blob(
 
 _assistant_agent = Agent(
     name="assistant",
-    model=Gemini(
-        model="gemini-3.8-flash",
-        retry_options=types.HttpRetryOptions(attempts=2),
-    ),
+    # Fast tier: low-latency user-facing chat.
+    model=gemini_for_agent("assistant", retry_attempts=2),
     description=(
         "A helpful personal and engineering assistant connected to the Blob "
         "memory fabric via MCP."
@@ -861,6 +860,7 @@ _assistant_agent = Agent(
 _assistant_app = App(
     root_agent=_assistant_agent,
     name="assistant",
+    plugins=build_guardrail_plugins(),
 )
 
 

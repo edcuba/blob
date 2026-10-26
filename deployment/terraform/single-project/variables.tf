@@ -67,5 +67,25 @@ variable "agent_identity_roles" {
     "roles/monitoring.metricWriter",
     "roles/cloudtrace.agent",
     "roles/datastore.user",
+    "roles/modelarmor.user",
+  ]
+}
+
+variable "pii_info_types" {
+  description = "Sensitive Data Protection info types that Model Armor de-identifies in prompts, responses, and tool outputs."
+  type        = list(string)
+  default = [
+    "EMAIL_ADDRESS",
+    "PHONE_NUMBER",
+    "PERSON_NAME",
+    "STREET_ADDRESS",
+    "CREDIT_CARD_NUMBER",
+    "IBAN_CODE",
+    "US_SOCIAL_SECURITY_NUMBER",
+    "PASSPORT",
+    "IP_ADDRESS",
+    "GCP_API_KEY",
+    "AUTH_TOKEN",
+    "ENCRYPTION_KEY",
   ]
 }

@@ -4,7 +4,6 @@
 > **Mission:** *"Blob is a memory fabric agent organizing the knowledge and memories of past interactions in a visual way."*
 > **Deep-Dive Companions:**
 > - [`spec/architecture-and-deployment.md`](architecture-and-deployment.md) — Detailed sequence diagrams, state machines, ER diagrams, and GCP Terraform/deployment architecture.
-> - [`spec/implementation-plan.md`](implementation-plan.md) — Five-pillar engineering coverage and 6-phase implementation plan.
 
 ---
 
@@ -222,6 +221,7 @@ To ensure complete end-to-end engineering coverage, the architecture is organize
 ### 6.3 Orchestration & Logic
 - **`AgentTool` Coordinator Pattern (`blob/agent.py`)**:
   - `root_agent` (`name="blob"`, `model="gemini-3.8-flash"`) acts as the stateful coordinator and wraps `wiki_curator` and `cluster_analyst` using `google.adk.tools.AgentTool`.
+  - **Strategic model routing** (`blob/app_utils/model_router.py`): `gemini-3.8-flash` for low-latency, user-facing and simple agents (`blob`, `assistant`, `cluster_analyst`); `gemini-4-argon` for `wiki_curator`'s multi-episode synthesis and contradiction resolution. Overridable via `BLOB_FAST_MODEL` / `BLOB_COMPLEX_MODEL`.
   - Using `AgentTool` (rather than full turn transfer via `sub_agents`) ensures `blob` retains turn control after sub-agent synthesis/clustering so it can immediately invoke UI tools (`ui_highlight_graph_nodes`, `ui_navigate_to_page`, `ui_focus_cluster`) and summarize changes in a single turn.
 - **Two-Stage Async Curation Pipeline**:
   - **Stage 1 (Sync `<200ms`)**: `remember` embeds and writes `Episode(status="pending_curation")` and emits an `episode_created` SSE event.
@@ -235,6 +235,9 @@ To ensure complete end-to-end engineering coverage, the architecture is organize
 - **Prompt-Response Logging & Privacy Controls (`telemetry.tf` & `service.tf`)**:
   - Full GenAI completions are exported as NDJSON to GCS (`gs://{project_id}-blob-logs/completions`) via `OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK=upload` and surfaced in BigQuery (`blob_telemetry.completions` external table + `blob_telemetry.completions_view`).
   - Trace spans keep message bodies off (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=NO_CONTENT`, `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS=false`) to prevent PII/payload bloat in Cloud Trace.
+- **PII Redaction (Model Armor + Sensitive Data Protection)**:
+  - `blob/app_utils/guardrails.py` registers ADK's `ModelArmorPlugin` on every `App` when `BLOB_MODEL_ARMOR_TEMPLATE` is set; it screens prompts, responses, and tool outputs, de-identifies PII to info-type tokens, blocks prompt injection, and fails closed.
+  - `deployment/terraform/single-project/model_armor.tf` provisions the SDP inspect/de-identify templates (info types in `var.pii_info_types`) and the Model Armor template, with `log_sanitize_operations` auditing.
 - **Structured Logging & Continuous Evaluation**:
   - Cloud Logging sink (`genai_logs_to_bq`) routes inference logs to partitioned BigQuery table `aiplatform_googleapis_com_reasoning_engine_stdout`.
   - Pre-deployment quality gates run `agents-cli eval run` (`custom_response_quality` LLM-as-judge + `agent_turn_count` in `tests/eval/eval_config.yaml`).

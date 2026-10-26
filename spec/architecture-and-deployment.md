@@ -32,8 +32,8 @@ flowchart TB
 
     subgraph ADKHierarchy["3. Google ADK Agent Hierarchy (blob/agent.py)"]
         RootBlob["root_agent ('blob' - gemini-3.8-flash)"]
-        SubCurator["wiki_curator (Synthesis & Link Hygiene)"]
-        SubCluster["cluster_analyst (Vector Clustering & MOCs)"]
+        SubCurator["wiki_curator (Synthesis & Link Hygiene - gemini-4-argon)"]
+        SubCluster["cluster_analyst (Vector Clustering & MOCs - gemini-3.8-flash)"]
         MemTools["Shared Memory Toolset (blob/tools/memory_tools.py)"]
         UITools["UI Action Toolset (blob/tools/ui_tools.py)"]
 
@@ -438,6 +438,8 @@ flowchart LR
 ### 6.3 Orchestration & Logic
 - **Coordinator + `AgentTool` Sub-Agents (`blob/agent.py`)**:
   - `root_agent` (`name="blob"`, `model="gemini-3.8-flash"`) wraps `wiki_curator` and `cluster_analyst` via `AgentTool(agent=...)` rather than `sub_agents` handoff. This guarantees `root_agent` retains control of the turn after invoking a sub-agent, allowing it to call `ui_highlight_graph_nodes` or `ui_navigate_to_page` before streaming the final answer.
+  - **Strategic model routing (`blob/app_utils/model_router.py`)**: models are assigned per agent role. The fast tier (`gemini-3.8-flash`, override with `BLOB_FAST_MODEL`) serves low-latency, user-facing and simple work (`blob`, `assistant`, `cluster_analyst`). The complex tier (`gemini-4-argon`, override with `BLOB_COMPLEX_MODEL`) serves `wiki_curator`'s multi-episode synthesis and contradiction resolution. The fast coordinator routes each request by delegating heavy synthesis to `wiki_curator`, so only that delegated work runs on the complex model.
+  - **PII redaction & prompt safety (`blob/app_utils/guardrails.py`, `model_armor.tf`)**: ADK's `ModelArmorPlugin` is registered on every `App` (and inherited by `AgentTool` sub-agents). It screens prompts, responses, and tool outputs against a Model Armor template whose Sensitive Data Protection inspect/de-identify templates replace PII with info-type tokens (e.g. `[EMAIL_ADDRESS]`); prompt-injection/jailbreak and malicious-URL filters block. Enabled by `BLOB_MODEL_ARMOR_TEMPLATE`; fails closed.
   - Background curation (`POST /api/curate` and MCP `curate`) invokes `run_curation_pipeline(namespace, focus_slug)`, which executes `wiki_curator` to synthesize `pending_curation` episodes and then `cluster_analyst` to refresh clusters and 2D layout coordinates.
 
 ### 6.4 Observability & Tracing

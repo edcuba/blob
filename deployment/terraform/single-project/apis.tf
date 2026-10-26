@@ -30,6 +30,8 @@ locals {
     "cloudtrace.googleapis.com",
     "telemetry.googleapis.com",
     "firestore.googleapis.com",
+    "modelarmor.googleapis.com",
+    "dlp.googleapis.com",
   ]
 }
 

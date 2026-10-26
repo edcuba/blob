@@ -20,12 +20,13 @@ import os
 
 from google.adk.agents import Agent
 from google.adk.apps import App
-from google.adk.models import Gemini
 from google.adk.tools.mcp_tool import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
-from google.genai import types
 
-MODEL = "gemini-3.8-flash"
+from blob.app_utils.guardrails import build_guardrail_plugins
+from blob.app_utils.model_router import FAST_MODEL, gemini_for_agent
+
+MODEL = FAST_MODEL
 
 BLOB_MCP_SSE_URL = os.environ.get("BLOB_MCP_SSE_URL", "http://127.0.0.1:8000/mcp/sse")
 
@@ -42,10 +43,8 @@ blob_mcp_tools = McpToolset(
 
 root_agent = Agent(
     name="assistant",
-    model=Gemini(
-        model=MODEL,
-        retry_options=types.HttpRetryOptions(attempts=3),
-    ),
+    # Fast tier: low-latency user-facing chat.
+    model=gemini_for_agent("assistant"),
     description=(
         "A helpful personal and engineering assistant connected to the Blob "
         "memory fabric via MCP."
@@ -69,4 +68,5 @@ root_agent = Agent(
 app = App(
     root_agent=root_agent,
     name="assistant",
+    plugins=build_guardrail_plugins(),
 )

@@ -91,7 +91,8 @@ def seed_knowledge_store(
         content=(
             "Developer conventions require Python 3.11+, uv package management, "
             "Pydantic v2 schemas, ruff linting, and preserving root_agent.name='blob' "
-            "with MODEL='gemini-3.8-flash'."
+            "with role-based model routing: gemini-3.8-flash for user-facing and simple "
+            "agents, gemini-4-argon for wiki_curator synthesis."
         ),
     )
     ep_dev_2 = target_store.create_episode(
@@ -255,7 +256,7 @@ def seed_knowledge_store(
             "## Four Serving Surfaces\n"
             "1. **Universal MCP Surface**: Exposes memory tools and `blob://` resources via [[MCP Memory Interface]].\n"
             "2. **Explorer REST & SSE API**: Powers real-time graph exploration in the [[insider-view-workspace|Insider View Visual Workspace]].\n"
-            "3. **ADK & A2A Coordinator**: Runs `blob` (`gemini-3.8-flash`) with `AgentTool`-wrapped sub-agents following [[python-and-adk-conventions|Python & ADK Engineering Conventions]].\n"
+            "3. **ADK & A2A Coordinator**: Runs `blob` (`gemini-3.8-flash`) with `AgentTool`-wrapped sub-agents (`wiki_curator` on `gemini-4-argon`, `cluster_analyst` on `gemini-3.8-flash`) following [[python-and-adk-conventions|Python & ADK Engineering Conventions]].\n"
             "4. **Future Mesh Integration**: Planned cross-project discovery via [[Agent Gateway Federation]].\n\n"
             "All persistence is backed by [[Blob Storage Architecture]] and curated via [[Agentic Curation Workflow]]."
         ),
@@ -307,7 +308,7 @@ def seed_knowledge_store(
             "All backend and agent code in [[Blob System Design]] adheres to strict "
             "Google ADK and Python 3.11+ engineering standards.\n\n"
             "## Non-Negotiable Rules\n"
-            '- **Model & Agent Identity**: Keep `MODEL = "gemini-3.8-flash"` and `root_agent.name = "blob"` in sync with `agents-cli-manifest.yaml`.\n'
+            '- **Model & Agent Identity**: Keep `root_agent.name = "blob"` in sync with `agents-cli-manifest.yaml`; assign models per role in `blob/app_utils/model_router.py` (`gemini-3.8-flash` fast tier, `gemini-4-argon` complex tier).\n'
             "- **`AgentTool` Orchestration**: Wrap `wiki_curator` and `cluster_analyst` using `AgentTool` so `blob` retains turn control to emit UI actions during [[Agentic Curation Workflow]].\n"
             "- **Verification**: Enforce `ruff`, `ty`, and automated suites defined in [[testing-and-evaluation-standards|Testing & Evaluation Standards]]."
         ),

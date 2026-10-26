@@ -16,3 +16,8 @@ output "logs_bucket_name" {
   description = "Logs storage bucket name"
   value       = google_storage_bucket.logs_data_bucket.name
 }
+
+output "model_armor_template_name" {
+  description = "Model Armor template for BLOB_MODEL_ARMOR_TEMPLATE (agents-cli deploy --update-env-vars)."
+  value       = local.model_armor_template_name
+}

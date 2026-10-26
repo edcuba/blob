@@ -21,11 +21,11 @@ from typing import Any
 
 from google.adk.agents import Agent
 from google.adk.apps import App
-from google.adk.models import Gemini
 from google.adk.tools import AgentTool
-from google.genai import types
 from opentelemetry import trace
 
+from blob.app_utils.guardrails import build_guardrail_plugins
+from blob.app_utils.model_router import FAST_MODEL, gemini_for_agent
 from blob.storage import (
     Episode,
     WikiPage,
@@ -41,7 +41,9 @@ from blob.tools import (
     UI_TOOLS,
 )
 
-MODEL = "gemini-3.8-flash"
+# Model of the user-facing `blob` coordinator. Per-agent routing (fast vs. complex
+# tier) lives in `blob.app_utils.model_router`.
+MODEL = FAST_MODEL
 
 tracer = trace.get_tracer(__name__)
 _TOKEN_RE = re.compile(r"[a-z0-9]{3,}")
@@ -49,10 +51,8 @@ _TOKEN_RE = re.compile(r"[a-z0-9]{3,}")
 
 wiki_curator = Agent(
     name="wiki_curator",
-    model=Gemini(
-        model=MODEL,
-        retry_options=types.HttpRetryOptions(attempts=3),
-    ),
+    # Complex tier: multi-episode synthesis and contradiction resolution.
+    model=gemini_for_agent("wiki_curator"),
     description=(
         "Synthesizes pending episodic memories into structured Markdown Wiki pages "
         "with Obsidian-style [[Wiki Links]], materializes ghost nodes, maintains "
@@ -80,10 +80,8 @@ wiki_curator = Agent(
 
 cluster_analyst = Agent(
     name="cluster_analyst",
-    model=Gemini(
-        model=MODEL,
-        retry_options=types.HttpRetryOptions(attempts=3),
-    ),
+    # Fast tier: labels clusters whose membership is already computed numerically.
+    model=gemini_for_agent("cluster_analyst"),
     description=(
         "Groups Wiki pages into semantic clusters using 768-d vector similarity, "
         "computes 2D force-graph layout coordinates, and curates cluster titles, "
@@ -110,10 +108,9 @@ root_agent = Agent(
     # manifest's value. Renaming the agent only here makes the two disagree, and
     # anything selecting traces by name stops finding this agent's.
     name="blob",
-    model=Gemini(
-        model=MODEL,
-        retry_options=types.HttpRetryOptions(attempts=3),
-    ),
+    # Fast tier: low-latency user-facing coordinator; delegates heavy synthesis
+    # to the complex-tier `wiki_curator`.
+    model=gemini_for_agent("blob"),
     description=(
         "Blob is a visual memory fabric agent that organizes knowledge and memories "
         "from past agent interactions into an interactive Markdown Wiki graph and "
@@ -158,6 +155,9 @@ root_agent = Agent(
 app = App(
     root_agent=root_agent,
     name="blob",
+    # Model Armor PII de-identification + prompt-injection screening; also
+    # covers the AgentTool-wrapped sub-agents.
+    plugins=build_guardrail_plugins(),
 )
 
 

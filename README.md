@@ -65,10 +65,9 @@ blob/
 ├── assistant/                 # Simple user-facing demo assistant consuming Blob strictly via MCP
 │   └── agent.py               # ADK assistant connected to Blob's /mcp/sse endpoint via McpToolset
 ├── frontend/                  # Vite + React + TypeScript "Insider View" UI (Graph, Wiki, Sidebar)
-├── spec/                      # Architecture, deployment & implementation specifications
+├── spec/                      # Architecture & deployment specifications
 │   ├── README.md              # Architecture & design specification
-│   ├── architecture-and-deployment.md # Sequence flows, ER diagrams & GCP topology
-│   └── implementation-plan.md # 6-phase implementation plan & verification status
+│   └── architecture-and-deployment.md # Sequence flows, ER diagrams & GCP topology
 ├── tests/                     # Unit, integration, and evaluation suites
 ├── deployment/                # Single-project Terraform infrastructure (Agent Runtime + Firestore)
 ├── Dockerfile                 # Multi-stage build (Node 22 frontend + Python 3.12 backend)
