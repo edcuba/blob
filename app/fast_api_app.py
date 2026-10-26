@@ -19,14 +19,18 @@ from collections.abc import AsyncIterator
 from a2a.server.tasks import InMemoryTaskStore
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.staticfiles import StaticFiles
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.runners import Runner
 
+from app.api.explorer_routes import explorer_router
 from app.app_utils import services
 from app.app_utils.a2a import attach_a2a_routes
 from app.app_utils.reasoning_engine_adapter import (
     attach_reasoning_engine_routes,
 )
+from app.mcp_server import mcp
 
 load_dotenv()
 allow_origins = (
@@ -77,6 +81,63 @@ app.description = "API for interacting with the Agent blob"
 # Proxy routes so the Google Cloud console playground (reasoning_engine SDK) can
 # talk to this agent alongside the native adk_api routes.
 attach_reasoning_engine_routes(app)
+
+# Explorer REST & SSE API (/api/*)
+app.include_router(explorer_router)
+
+# Universal MCP Server (/mcp Streamable SSE/HTTP)
+app.mount("/mcp", mcp.sse_app())
+
+FRONTEND_DIST_DIR = os.path.join(AGENT_DIR, "frontend", "dist")
+FRONTEND_ASSETS_DIR = os.path.join(FRONTEND_DIST_DIR, "assets")
+if os.path.isdir(FRONTEND_ASSETS_DIR):
+    app.mount(
+        "/insider/assets",
+        StaticFiles(directory=FRONTEND_ASSETS_DIR),
+        name="insider-assets",
+    )
+
+_FALLBACK_INSIDER_HTML = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Blob — Insider View Memory Fabric</title>
+  </head>
+  <body style="background:#0b0f19;color:#e2e8f0;font-family:system-ui,sans-serif;padding:2rem;">
+    <div id="root">
+      <h1>Blob — Insider View Workspace</h1>
+      <p>Visual memory fabric &amp; Obsidian graph co-curation workspace.</p>
+    </div>
+  </body>
+</html>
+"""
+
+
+def _serve_insider_spa(subpath: str = "") -> Response:
+    """Serve static assets or SPA index.html from `frontend/dist` with a fallback."""
+    dist_root = os.path.realpath(FRONTEND_DIST_DIR)
+    if subpath:
+        candidate = os.path.realpath(os.path.join(dist_root, subpath.lstrip("/")))
+        if candidate.startswith(dist_root + os.sep) and os.path.isfile(candidate):
+            return FileResponse(candidate)
+
+    index_file = os.path.join(dist_root, "index.html")
+    if os.path.isfile(index_file):
+        return FileResponse(index_file)
+    return HTMLResponse(content=_FALLBACK_INSIDER_HTML, status_code=200)
+
+
+@app.get("/insider", include_in_schema=False)
+async def insider_root() -> Response:
+    """Serve the Insider View React SPA entrypoint."""
+    return _serve_insider_spa()
+
+
+@app.get("/insider/{path:path}", include_in_schema=False)
+async def insider_subpath(path: str) -> Response:
+    """Serve Insider View static assets or SPA client-side routes."""
+    return _serve_insider_spa(path)
 
 
 # Main execution
