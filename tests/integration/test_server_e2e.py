@@ -70,6 +70,7 @@ def start_server() -> subprocess.Popen[str]:
     ]
     env = os.environ.copy()
     env["INTEGRATION_TEST"] = "TRUE"
+    env.setdefault("BLOB_EMBEDDING_BACKEND", "hash")
     # Advertise a loopback URL so the A2A client can reach the card's transport.
     env["APP_URL"] = BASE_URL
     process = subprocess.Popen(
@@ -287,3 +288,106 @@ def test_reasoning_engine_sync_stream(server_fixture: subprocess.Popen[str]) -> 
         for event in events
     )
     assert has_text, "No text content in reasoning_engine sync events"
+
+
+def test_blob_explorer_api_and_insider_e2e(
+    server_fixture: subprocess.Popen[str],
+) -> None:
+    """End-to-end test for Blob Explorer REST routes (`/api/*`) and Insider View SPA (`/insider`)."""
+    # 1. Seed the 4-cluster demo dataset
+    seed_resp = requests.post(
+        f"{BASE_URL}/api/seed",
+        headers=HEADERS,
+        json={"namespace": "default", "force": True},
+        timeout=30,
+    )
+    assert seed_resp.status_code == 200
+    seed_data = seed_resp.json()
+    assert seed_data["status"] == "seeded"
+    assert seed_data["clusters_count"] == 4
+
+    # 2. Verify GET /api/graph returns 4 clusters, active pages, and ghost nodes
+    graph_resp = requests.get(f"{BASE_URL}/api/graph", timeout=30)
+    assert graph_resp.status_code == 200
+    graph_data = graph_resp.json()
+    assert len(graph_data["clusters"]) == 4
+    assert graph_data["stats"]["active_pages"] >= 8
+    assert graph_data["stats"]["ghost_pages"] >= 2
+    assert any(n["status"] == "active" for n in graph_data["nodes"])
+    assert any(n["status"] == "ghost" for n in graph_data["nodes"])
+
+    # 3. Verify GET /api/pages/blob-storage-architecture
+    page_resp = requests.get(
+        f"{BASE_URL}/api/pages/blob-storage-architecture", timeout=30
+    )
+    assert page_resp.status_code == 200
+    page_data = page_resp.json()
+    assert page_data["slug"] == "blob-storage-architecture"
+    assert len(page_data["backlinks"]) >= 1
+    assert len(page_data["source_episodes"]) >= 1
+
+    # 4. Verify PUT /api/pages/custom-e2e-note parses [[Wikilink]] and creates ghost node
+    put_resp = requests.put(
+        f"{BASE_URL}/api/pages/custom-e2e-note",
+        headers=HEADERS,
+        json={
+            "title": "Custom E2E Note",
+            "markdown_body": (
+                "# Custom E2E Note\n\n"
+                "Links to [[Blob Storage Architecture]] and new ghost [[E2E Ghost Concept]]."
+            ),
+            "tags": ["e2e", "testing"],
+        },
+        timeout=30,
+    )
+    assert put_resp.status_code == 200
+    put_data = put_resp.json()
+    out_slugs = [link["slug"] for link in put_data["out_links"]]
+    assert "blob-storage-architecture" in out_slugs
+    assert "e2e-ghost-concept" in out_slugs
+
+    ghost_resp = requests.get(f"{BASE_URL}/api/pages/e2e-ghost-concept", timeout=30)
+    assert ghost_resp.status_code == 200
+    assert ghost_resp.json()["page_status"] == "ghost"
+
+    # 5. Apply 1-click suggestion POST /api/suggestions/sug-storage-index-01/apply
+    apply_resp = requests.post(
+        f"{BASE_URL}/api/suggestions/sug-storage-index-01/apply",
+        headers=HEADERS,
+        json={"namespace": "default"},
+        timeout=30,
+    )
+    assert apply_resp.status_code == 200
+    assert apply_resp.json()["status"] == "ok"
+    assert apply_resp.json()["suggestion"]["status"] == "applied"
+
+    # 6. Create an episode via POST /api/episodes and run POST /api/curate
+    ep_resp = requests.post(
+        f"{BASE_URL}/api/episodes",
+        headers=HEADERS,
+        json={
+            "content": "E2E Ghost Concept synchronizes regional knowledge caches.",
+            "source_agent": "claude-code",
+            "tags": ["e2e", "cache"],
+            "namespace": "default",
+        },
+        timeout=30,
+    )
+    assert ep_resp.status_code == 200
+    ep_id = ep_resp.json()["episode_id"]
+
+    curate_resp = requests.post(
+        f"{BASE_URL}/api/curate",
+        headers=HEADERS,
+        json={"namespace": "default"},
+        timeout=60,
+    )
+    assert curate_resp.status_code == 200
+    curate_data = curate_resp.json()
+    assert curate_data["status"] == "ok"
+    assert ep_id in curate_data["synthesized_episodes"]
+
+    # 7. Verify GET /insider serves the compiled Vite SPA with HTTP 200
+    insider_resp = requests.get(f"{BASE_URL}/insider", timeout=30)
+    assert insider_resp.status_code == 200
+    assert "text/html" in insider_resp.headers.get("content-type", "")

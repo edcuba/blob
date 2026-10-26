@@ -1,30 +1,47 @@
 {
   "eval_cases": [
     {
-      "eval_case_id": "greeting",
+      "eval_case_id": "capabilities_and_clusters",
       "prompt": {
         "role": "user",
-        "parts": [{"text": "Hello, what can you help me with?"}]
+        "parts": [
+          {
+            "text": "What can you help me with as the Blob memory fabric agent, and what semantic clusters currently exist in the default namespace?"
+          }
+        ]
       }
     },
     {
-      "eval_case_id": "weather_query",
+      "eval_case_id": "remember_architectural_decision",
       "prompt": {
         "role": "user",
-        "parts": [{"text": "What's the weather like in San Francisco?"}]
+        "parts": [
+          {
+            "text": "Please remember a new episodic memory from source_agent='claude-code' with tags ['firestore', 'vector-search']: Blob uses 768-dimensional Firestore composite vector indexes in us-east1 for hybrid knowledge recall."
+          }
+        ]
       }
     },
     {
-      "eval_case_id": "capital_lookup",
+      "eval_case_id": "synthesize_wiki_page_with_links",
       "prompt": {
         "role": "user",
-        "parts": [{"text": "What is the capital of France?"}]
-      },
-      "reference": {
-        "response": {
-          "role": "model",
-          "parts": [{"text": "The capital of France is Paris."}]
-        }
+        "parts": [
+          {
+            "text": "Create a Wiki page titled 'Firestore Vector Indexing' in the default namespace with tags ['firestore', 'vector-search'] that explains 768-dimensional vector search and links to [[Blob Storage Architecture]] and [[MCP Memory Interface]]."
+          }
+        ]
+      }
+    },
+    {
+      "eval_case_id": "recall_and_explain_provenance",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Recall our knowledge about 'Firestore vector storage' in the default namespace and summarize the matching Wiki pages or episodes along with their provenance."
+          }
+        ]
       }
     }
   ]

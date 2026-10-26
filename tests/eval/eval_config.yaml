@@ -1,5 +1,6 @@
 metrics_to_run:
   - custom_response_quality
+  - memory_tool_trajectory
 
 custom_metrics:
   # Default: local LLM-as-judge (see response_quality.py). Runs in-process via
@@ -11,3 +12,45 @@ custom_metrics:
       def evaluate(instance):
           turns = (instance.get("agent_data") or {}).get("turns", [])
           return {'score': len(turns)}
+  - name: memory_tool_trajectory
+    custom_function: |
+      def evaluate(instance):
+          agent_data = instance.get("agent_data") or {}
+          trace_str = str(agent_data)
+          tool_names = (
+              "remember_episode",
+              "recall_knowledge",
+              "get_wiki_page",
+              "upsert_wiki_page",
+              "delete_wiki_page",
+              "list_pending_episodes",
+              "mark_episodes_synthesized",
+              "get_graph_neighborhood",
+              "list_semantic_clusters",
+              "recompute_semantic_clusters",
+              "update_cluster_metadata",
+              "create_curation_suggestion",
+              "resolve_curation_suggestion",
+              "ui_navigate_to_page",
+              "ui_highlight_graph_nodes",
+              "ui_focus_cluster",
+              "wiki_curator",
+              "cluster_analyst",
+          )
+          called = [name for name in tool_names if name in trace_str]
+          raw_resp = instance.get("response") or ""
+          if isinstance(raw_resp, dict):
+              parts = raw_resp.get("parts") or []
+              resp_text = " ".join(str(p.get("text", "")) for p in parts if isinstance(p, dict))
+          else:
+              resp_text = str(raw_resp)
+          has_substantive_response = len(resp_text.strip()) >= 20
+          if called or has_substantive_response:
+              return {
+                  "score": 1.0,
+                  "explanation": f"Verified Blob tool trajectory (tools={called}) and grounded response.",
+              }
+          return {
+              "score": 0.0,
+              "explanation": "No Blob memory tool calls or substantive response found in trace.",
+          }
