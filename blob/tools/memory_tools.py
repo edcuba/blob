@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from opentelemetry import trace
 
@@ -25,42 +25,25 @@ from blob.storage import (
     serialize_wiki_page,
     slugify,
 )
+from blob.tools.schemas import (
+    ClusterListResult,
+    ClusterResult,
+    CurationSuggestionResult,
+    DeleteWikiPageResult,
+    EpisodeListResult,
+    EpisodeView,
+    GraphNeighborhoodResult,
+    MarkEpisodesSynthesizedResult,
+    RecallKnowledgeResult,
+    RememberEpisodeResult,
+    ResolveSuggestionResult,
+    UpsertWikiPageResult,
+    WikiPageResult,
+    WikiPageView,
+)
+from blob.tools.structured_tool import StructuredFunctionTool
 
 tracer = trace.get_tracer(__name__)
-
-
-def _strip_embeddings_from_recall(payload: dict[str, Any]) -> dict[str, Any]:
-    """Remove raw 768-d float vectors from recall results to keep tool output compact."""
-    cleaned = dict(payload)
-    for key in ("matches", "wiki_pages"):
-        items = cleaned.get(key)
-        if isinstance(items, list):
-            new_items: list[dict[str, Any]] = []
-            for item in items:
-                if isinstance(item, dict):
-                    item_copy = dict(item)
-                    if isinstance(item_copy.get("page"), dict):
-                        page_copy = dict(item_copy["page"])
-                        page_copy.pop("embedding", None)
-                        item_copy["page"] = page_copy
-                    new_items.append(item_copy)
-            cleaned[key] = new_items
-
-    for key in ("episodes", "pending_episodes"):
-        items = cleaned.get(key)
-        if isinstance(items, list):
-            new_eps: list[dict[str, Any]] = []
-            for item in items:
-                if isinstance(item, dict):
-                    item_copy = dict(item)
-                    if isinstance(item_copy.get("episode"), dict):
-                        ep_copy = dict(item_copy["episode"])
-                        ep_copy.pop("embedding", None)
-                        item_copy["episode"] = ep_copy
-                    new_eps.append(item_copy)
-            cleaned[key] = new_eps
-
-    return cleaned
 
 
 def remember_episode(
@@ -69,7 +52,7 @@ def remember_episode(
     tags: list[str] | None = None,
     namespace: str = "default",
     interaction_id: str = "",
-) -> dict[str, Any]:
+) -> RememberEpisodeResult:
     """Record a raw episodic memory in the Blob knowledge store for immediate recall and curation.
 
     Args:
@@ -88,10 +71,10 @@ def remember_episode(
 
         cleaned_content = (content or "").strip()
         if not cleaned_content:
-            return {
-                "status": "error",
-                "message": "Episode content cannot be empty.",
-            }
+            return RememberEpisodeResult.error(
+                "Episode content cannot be empty.",
+                namespace=namespace or "default",
+            )
 
         store = get_knowledge_store()
         episode = store.create_episode(
@@ -101,12 +84,12 @@ def remember_episode(
             namespace=namespace or "default",
             interaction_id=interaction_id.strip() or None,
         )
-        return {
-            "status": "ok",
-            "episode_id": episode.id,
-            "namespace": episode.namespace,
-            "episode": episode.model_dump(exclude={"embedding"}),
-        }
+        return RememberEpisodeResult(
+            status="ok",
+            episode_id=episode.id,
+            namespace=episode.namespace,
+            episode=EpisodeView.from_model(episode),
+        )
 
 
 def recall_knowledge(
@@ -114,7 +97,7 @@ def recall_knowledge(
     namespace: str = "default",
     top_k: int = 5,
     include_episodes: bool = True,
-) -> dict[str, Any]:
+) -> RecallKnowledgeResult:
     """Perform hybrid vector, keyword, and 1-hop graph recall across Wiki pages and pending episodes.
 
     Args:
@@ -132,10 +115,10 @@ def recall_knowledge(
 
         cleaned_query = (query or "").strip()
         if not cleaned_query:
-            return {
-                "status": "error",
-                "message": "Recall query cannot be empty.",
-            }
+            return RecallKnowledgeResult.error(
+                "Recall query cannot be empty.",
+                namespace=namespace or "default",
+            )
 
         store = get_knowledge_store()
         result = store.recall(
@@ -144,17 +127,14 @@ def recall_knowledge(
             top_k=max(1, top_k),
             include_episodes=include_episodes,
         )
-        cleaned = _strip_embeddings_from_recall(result)
-        return {
-            "status": "ok",
-            **cleaned,
-        }
+        # Embedding-free view models drop raw 768-d vectors during validation.
+        return RecallKnowledgeResult.model_validate({**result, "status": "ok"})
 
 
 def get_wiki_page(
     slug_or_title: str,
     namespace: str = "default",
-) -> dict[str, Any]:
+) -> WikiPageResult:
     """Fetch a WikiPage by slug or title, including serialized Markdown, backlinks, provenance, and suggestions.
 
     Args:
@@ -173,40 +153,39 @@ def get_wiki_page(
         ns = namespace or "default"
         page = store.get_wiki_page(slug_or_title, namespace=ns)
         if page is None:
-            return {
-                "status": "error",
-                "namespace": ns,
-                "message": f"WikiPage '{slug_or_title}' not found in namespace '{ns}'.",
-            }
+            return WikiPageResult.error(
+                f"WikiPage '{slug_or_title}' not found in namespace '{ns}'.",
+                namespace=ns,
+            )
 
         serialized_md = serialize_wiki_page(page)
         suggestions = store.list_suggestions(
             namespace=ns, target_slug=page.slug, status="open"
         )
         source_episodes = [
-            ep.model_dump(exclude={"embedding"})
+            EpisodeView.from_model(ep)
             for src in page.sources
             if (ep := store.get_episode(src.episode_id, namespace=ns)) is not None
         ]
 
-        return {
-            "status": "ok",
-            "namespace": ns,
-            "slug": page.slug,
-            "title": page.title,
-            "page_status": page.status,
-            "cluster_id": page.cluster_id,
-            "tags": list(page.tags),
-            "markdown_body": page.markdown_body,
-            "serialized_markdown": serialized_md,
-            "out_links": list(page.out_links),
-            "backlinks": list(page.backlinks),
-            "relations": [r.model_dump() for r in page.relations],
-            "sources": [s.model_dump() for s in page.sources],
-            "source_episodes": source_episodes,
-            "open_suggestions": [s.model_dump() for s in suggestions],
-            "page": page.model_dump(exclude={"embedding"}),
-        }
+        return WikiPageResult(
+            status="ok",
+            namespace=ns,
+            slug=page.slug,
+            title=page.title,
+            page_status=page.status,
+            cluster_id=page.cluster_id,
+            tags=list(page.tags),
+            markdown_body=page.markdown_body,
+            serialized_markdown=serialized_md,
+            out_links=list(page.out_links),
+            backlinks=list(page.backlinks),
+            relations=list(page.relations),
+            sources=list(page.sources),
+            source_episodes=source_episodes,
+            open_suggestions=list(suggestions),
+            page=WikiPageView.from_model(page),
+        )
 
 
 def upsert_wiki_page(
@@ -218,7 +197,7 @@ def upsert_wiki_page(
     tags: list[str] | None = None,
     source_episode_ids: list[str] | None = None,
     source_agent: str = "blob",
-) -> dict[str, Any]:
+) -> UpsertWikiPageResult:
     """Create or update a Markdown WikiPage, automatically parsing [[Wiki Links]], creating ghost nodes, and updating backlinks.
 
     Args:
@@ -240,10 +219,10 @@ def upsert_wiki_page(
         span.set_attribute("blob.title", title)
 
         if not (title or "").strip() and not (slug or "").strip():
-            return {
-                "status": "error",
-                "message": "Either title or slug must be provided to upsert a WikiPage.",
-            }
+            return UpsertWikiPageResult.error(
+                "Either title or slug must be provided to upsert a WikiPage.",
+                namespace=ns,
+            )
 
         store = get_knowledge_store()
         page = store.upsert_wiki_page(
@@ -259,24 +238,24 @@ def upsert_wiki_page(
         )
         span.set_attribute("blob.page.slug", page.slug)
 
-        return {
-            "status": "ok",
-            "namespace": ns,
-            "slug": page.slug,
-            "title": page.title,
-            "page_status": page.status,
-            "cluster_id": page.cluster_id,
-            "out_links": list(page.out_links),
-            "backlinks": list(page.backlinks),
-            "sources": [s.model_dump() for s in page.sources],
-            "page": page.model_dump(exclude={"embedding"}),
-        }
+        return UpsertWikiPageResult(
+            status="ok",
+            namespace=ns,
+            slug=page.slug,
+            title=page.title,
+            page_status=page.status,
+            cluster_id=page.cluster_id,
+            out_links=list(page.out_links),
+            backlinks=list(page.backlinks),
+            sources=list(page.sources),
+            page=WikiPageView.from_model(page),
+        )
 
 
 def delete_wiki_page(
     slug: str,
     namespace: str = "default",
-) -> dict[str, Any]:
+) -> DeleteWikiPageResult:
     """Delete a WikiPage by slug and recompute bidirectional backlinks in the namespace.
 
     Args:
@@ -295,25 +274,24 @@ def delete_wiki_page(
         store = get_knowledge_store()
         deleted = store.delete_wiki_page(slug=slug, namespace=ns)
         if not deleted:
-            return {
-                "status": "error",
-                "deleted": False,
-                "slug": norm_slug,
-                "namespace": ns,
-                "message": f"WikiPage '{slug}' not found in namespace '{ns}'.",
-            }
-        return {
-            "status": "ok",
-            "deleted": True,
-            "slug": norm_slug,
-            "namespace": ns,
-        }
+            return DeleteWikiPageResult.error(
+                f"WikiPage '{slug}' not found in namespace '{ns}'.",
+                deleted=False,
+                slug=norm_slug,
+                namespace=ns,
+            )
+        return DeleteWikiPageResult(
+            status="ok",
+            deleted=True,
+            slug=norm_slug,
+            namespace=ns,
+        )
 
 
 def list_pending_episodes(
     namespace: str = "default",
     limit: int = 25,
-) -> dict[str, Any]:
+) -> EpisodeListResult:
     """List raw episodes with status='pending_curation' awaiting synthesis into Wiki pages.
 
     Args:
@@ -332,19 +310,19 @@ def list_pending_episodes(
         episodes = store.list_episodes(
             namespace=ns, status="pending_curation", limit=max(1, limit)
         )
-        return {
-            "status": "ok",
-            "namespace": ns,
-            "count": len(episodes),
-            "episodes": [ep.model_dump(exclude={"embedding"}) for ep in episodes],
-        }
+        return EpisodeListResult(
+            status="ok",
+            namespace=ns,
+            count=len(episodes),
+            episodes=[EpisodeView.from_model(ep) for ep in episodes],
+        )
 
 
 def mark_episodes_synthesized(
     episode_ids: list[str],
     target_slug: str,
     namespace: str = "default",
-) -> dict[str, Any]:
+) -> MarkEpisodesSynthesizedResult:
     """Mark one or more pending episodes as synthesized into a target WikiPage slug.
 
     Args:
@@ -367,21 +345,21 @@ def mark_episodes_synthesized(
             target_slug=norm_slug,
             namespace=ns,
         )
-        return {
-            "status": "ok",
-            "namespace": ns,
-            "target_slug": norm_slug,
-            "updated_count": len(updated),
-            "episode_ids": [ep.id for ep in updated],
-            "episodes": [ep.model_dump(exclude={"embedding"}) for ep in updated],
-        }
+        return MarkEpisodesSynthesizedResult(
+            status="ok",
+            namespace=ns,
+            target_slug=norm_slug,
+            updated_count=len(updated),
+            episode_ids=[ep.id for ep in updated],
+            episodes=[EpisodeView.from_model(ep) for ep in updated],
+        )
 
 
 def get_graph_neighborhood(
     seed_slug: str,
     depth: int = 2,
     namespace: str = "default",
-) -> dict[str, Any]:
+) -> GraphNeighborhoodResult:
     """Traverse the local ego-graph around a seed WikiPage up to `depth` hops.
 
     Args:
@@ -404,20 +382,20 @@ def get_graph_neighborhood(
             depth=max(1, depth),
             namespace=ns,
         )
-        return {
-            "status": "ok",
-            "namespace": ns,
-            "seed_slug": slugify(seed_slug),
-            "depth": depth,
-            "nodes": [n.model_dump() for n in snapshot.nodes],
-            "edges": [e.model_dump() for e in snapshot.edges],
-            "clusters": [c.model_dump() for c in snapshot.clusters],
-        }
+        return GraphNeighborhoodResult(
+            status="ok",
+            namespace=ns,
+            seed_slug=slugify(seed_slug),
+            depth=depth,
+            nodes=list(snapshot.nodes),
+            edges=list(snapshot.edges),
+            clusters=list(snapshot.clusters),
+        )
 
 
 def list_semantic_clusters(
     namespace: str = "default",
-) -> dict[str, Any]:
+) -> ClusterListResult:
     """List all semantic clusters and their member WikiPage slugs in a namespace.
 
     Args:
@@ -432,18 +410,18 @@ def list_semantic_clusters(
 
         store = get_knowledge_store()
         clusters = store.list_clusters(namespace=ns)
-        return {
-            "status": "ok",
-            "namespace": ns,
-            "count": len(clusters),
-            "clusters": [c.model_dump() for c in clusters],
-        }
+        return ClusterListResult(
+            status="ok",
+            namespace=ns,
+            count=len(clusters),
+            clusters=list(clusters),
+        )
 
 
 def recompute_semantic_clusters(
     namespace: str = "default",
     max_clusters: int = 4,
-) -> dict[str, Any]:
+) -> ClusterListResult:
     """Re-cluster WikiPages using 768-d vector similarity and update 2D force-graph coordinates.
 
     Args:
@@ -462,12 +440,12 @@ def recompute_semantic_clusters(
         clusters = store.recompute_clusters(
             namespace=ns, max_clusters=max(1, max_clusters)
         )
-        return {
-            "status": "ok",
-            "namespace": ns,
-            "count": len(clusters),
-            "clusters": [c.model_dump() for c in clusters],
-        }
+        return ClusterListResult(
+            status="ok",
+            namespace=ns,
+            count=len(clusters),
+            clusters=list(clusters),
+        )
 
 
 def update_cluster_metadata(
@@ -476,7 +454,7 @@ def update_cluster_metadata(
     summary: str = "",
     color: str = "",
     namespace: str = "default",
-) -> dict[str, Any]:
+) -> ClusterResult:
     """Update the human-readable title, summary, or hex color of a semantic cluster.
 
     Args:
@@ -503,17 +481,17 @@ def update_cluster_metadata(
             namespace=ns,
         )
         if updated is None:
-            return {
-                "status": "error",
-                "namespace": ns,
-                "cluster_id": cluster_id,
-                "message": f"Cluster '{cluster_id}' not found in namespace '{ns}'.",
-            }
-        return {
-            "status": "ok",
-            "namespace": ns,
-            "cluster": updated.model_dump(),
-        }
+            return ClusterResult.error(
+                f"Cluster '{cluster_id}' not found in namespace '{ns}'.",
+                namespace=ns,
+                cluster_id=cluster_id,
+            )
+        return ClusterResult(
+            status="ok",
+            namespace=ns,
+            cluster_id=updated.id,
+            cluster=updated,
+        )
 
 
 def create_curation_suggestion(
@@ -524,7 +502,7 @@ def create_curation_suggestion(
     episode_ids: list[str] | None = None,
     proposed_markdown: str = "",
     namespace: str = "default",
-) -> dict[str, Any]:
+) -> CurationSuggestionResult:
     """Create a 1-click co-curation suggestion surfaced on a WikiPage in the Insider View UI.
 
     Args:
@@ -555,19 +533,19 @@ def create_curation_suggestion(
             proposed_markdown=proposed_markdown.strip() or None,
             namespace=ns,
         )
-        return {
-            "status": "ok",
-            "namespace": ns,
-            "suggestion_id": suggestion.id,
-            "suggestion": suggestion.model_dump(),
-        }
+        return CurationSuggestionResult(
+            status="ok",
+            namespace=ns,
+            suggestion_id=suggestion.id,
+            suggestion=suggestion,
+        )
 
 
 def resolve_curation_suggestion(
     suggestion_id: str,
     action: str = "apply",
     namespace: str = "default",
-) -> dict[str, Any]:
+) -> ResolveSuggestionResult:
     """Apply or dismiss an open co-curation suggestion by ID.
 
     Args:
@@ -595,45 +573,54 @@ def resolve_curation_suggestion(
             action=norm_action,
             namespace=ns,
         )
-        if isinstance(result.get("page"), dict):
-            page_copy = dict(result["page"])
-            page_copy.pop("embedding", None)
-            result = {**result, "page": page_copy}
-        return result
+        # The WikiPageView model drops the raw embedding vector during validation.
+        return ResolveSuggestionResult.model_validate({"namespace": ns, **result})
 
 
-MEMORY_TOOLS = [
-    remember_episode,
-    recall_knowledge,
-    get_wiki_page,
-    upsert_wiki_page,
-    delete_wiki_page,
-    list_pending_episodes,
-    mark_episodes_synthesized,
-    get_graph_neighborhood,
-    list_semantic_clusters,
-    recompute_semantic_clusters,
-    update_cluster_metadata,
-    create_curation_suggestion,
-    resolve_curation_suggestion,
-]
+# One StructuredFunctionTool instance per function, shared across agent tool lists.
+_TOOL_REGISTRY: dict[str, StructuredFunctionTool] = {
+    func.__name__: StructuredFunctionTool(func)
+    for func in (
+        remember_episode,
+        recall_knowledge,
+        get_wiki_page,
+        upsert_wiki_page,
+        delete_wiki_page,
+        list_pending_episodes,
+        mark_episodes_synthesized,
+        get_graph_neighborhood,
+        list_semantic_clusters,
+        recompute_semantic_clusters,
+        update_cluster_metadata,
+        create_curation_suggestion,
+        resolve_curation_suggestion,
+    )
+}
+
+MEMORY_TOOLS = list(_TOOL_REGISTRY.values())
 
 CURATOR_TOOLS = [
-    list_pending_episodes,
-    recall_knowledge,
-    get_wiki_page,
-    upsert_wiki_page,
-    mark_episodes_synthesized,
-    get_graph_neighborhood,
-    create_curation_suggestion,
-    resolve_curation_suggestion,
+    _TOOL_REGISTRY[name]
+    for name in (
+        "list_pending_episodes",
+        "recall_knowledge",
+        "get_wiki_page",
+        "upsert_wiki_page",
+        "mark_episodes_synthesized",
+        "get_graph_neighborhood",
+        "create_curation_suggestion",
+        "resolve_curation_suggestion",
+    )
 ]
 
 CLUSTER_TOOLS = [
-    list_semantic_clusters,
-    recompute_semantic_clusters,
-    update_cluster_metadata,
-    get_wiki_page,
-    upsert_wiki_page,
-    get_graph_neighborhood,
+    _TOOL_REGISTRY[name]
+    for name in (
+        "list_semantic_clusters",
+        "recompute_semantic_clusters",
+        "update_cluster_metadata",
+        "get_wiki_page",
+        "upsert_wiki_page",
+        "get_graph_neighborhood",
+    )
 ]

@@ -113,11 +113,11 @@ def test_agent_memory_and_curation_tools(monkeypatch: pytest.MonkeyPatch) -> Non
             tags=["bigquery", "telemetry", "observability"],
             namespace="default",
         )
-        assert ep_res["status"] == "ok"
+        assert ep_res.status == "ok"
 
         curation_res = asyncio.run(run_curation_pipeline(namespace="default"))
         assert curation_res["status"] == "ok"
-        assert ep_res["episode_id"] in curation_res["synthesized_episodes"]
+        assert ep_res.episode_id in curation_res["synthesized_episodes"]
         assert len(curation_res["updated_pages"]) >= 1
         assert len(curation_res["clusters"]) == 4
 
@@ -126,8 +126,8 @@ def test_agent_memory_and_curation_tools(monkeypatch: pytest.MonkeyPatch) -> Non
             namespace="default",
             top_k=3,
         )
-        assert recall_res["status"] == "ok"
-        assert len(recall_res["matches"]) >= 1
+        assert recall_res.status == "ok"
+        assert len(recall_res.matches) >= 1
     finally:
         set_embedder(None)
         set_knowledge_store(None)

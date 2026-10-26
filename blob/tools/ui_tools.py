@@ -16,11 +16,11 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from opentelemetry import trace
 
 from blob.storage import get_event_bus, slugify
+from blob.tools.schemas import UIActionResult
+from blob.tools.structured_tool import StructuredFunctionTool
 
 tracer = trace.get_tracer(__name__)
 
@@ -29,7 +29,7 @@ def ui_navigate_to_page(
     slug: str,
     reason: str = "",
     namespace: str = "default",
-) -> dict[str, Any]:
+) -> UIActionResult:
     """Navigate the user's Insider View Wiki editor and graph selection to a specific WikiPage.
 
     Args:
@@ -51,21 +51,21 @@ def ui_navigate_to_page(
             {"slug": norm_slug, "reason": reason},
             namespace=ns,
         )
-        return {
-            "status": "ok",
-            "action": "ui_navigate_to_page",
-            "slug": norm_slug,
-            "reason": reason,
-            "namespace": ns,
-            "event": event.model_dump(),
-        }
+        return UIActionResult(
+            status="ok",
+            action="ui_navigate_to_page",
+            slug=norm_slug,
+            reason=reason,
+            namespace=ns,
+            event=event,
+        )
 
 
 def ui_highlight_graph_nodes(
     slugs: list[str],
     reason: str = "",
     namespace: str = "default",
-) -> dict[str, Any]:
+) -> UIActionResult:
     """Pulse and highlight a set of nodes on the 2D force-directed graph canvas in the Insider View UI.
 
     Args:
@@ -87,21 +87,21 @@ def ui_highlight_graph_nodes(
             {"slugs": norm_slugs, "reason": reason},
             namespace=ns,
         )
-        return {
-            "status": "ok",
-            "action": "ui_highlight_nodes",
-            "slugs": norm_slugs,
-            "reason": reason,
-            "namespace": ns,
-            "event": event.model_dump(),
-        }
+        return UIActionResult(
+            status="ok",
+            action="ui_highlight_nodes",
+            slugs=norm_slugs,
+            reason=reason,
+            namespace=ns,
+            event=event,
+        )
 
 
 def ui_focus_cluster(
     cluster_id: str,
     reason: str = "",
     namespace: str = "default",
-) -> dict[str, Any]:
+) -> UIActionResult:
     """Zoom and focus the 2D graph canvas onto a semantic cluster hull in the Insider View UI.
 
     Args:
@@ -123,18 +123,18 @@ def ui_focus_cluster(
             {"cluster_id": clean_id, "reason": reason},
             namespace=ns,
         )
-        return {
-            "status": "ok",
-            "action": "ui_focus_cluster",
-            "cluster_id": clean_id,
-            "reason": reason,
-            "namespace": ns,
-            "event": event.model_dump(),
-        }
+        return UIActionResult(
+            status="ok",
+            action="ui_focus_cluster",
+            cluster_id=clean_id,
+            reason=reason,
+            namespace=ns,
+            event=event,
+        )
 
 
 UI_TOOLS = [
-    ui_navigate_to_page,
-    ui_highlight_graph_nodes,
-    ui_focus_cluster,
+    StructuredFunctionTool(ui_navigate_to_page),
+    StructuredFunctionTool(ui_highlight_graph_nodes),
+    StructuredFunctionTool(ui_focus_cluster),
 ]

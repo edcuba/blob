@@ -36,6 +36,14 @@ from blob.tools.memory_tools import (
     list_semantic_clusters,
     recall_knowledge,
 )
+from blob.tools.schemas import (
+    ClusterListResult,
+    EpisodeView,
+    GraphNeighborhoodResult,
+    MCPPageResult,
+    MCPRememberResult,
+    RecallKnowledgeResult,
+)
 
 tracer = trace.get_tracer(__name__)
 
@@ -64,7 +72,7 @@ def remember(
     tags: list[str] | None = None,
     namespace: str = "default",
     auto_curate: bool = True,
-) -> dict[str, Any]:
+) -> MCPRememberResult:
     """Store an episodic memory in the Blob knowledge fabric and optionally trigger background curation.
 
     Args:
@@ -86,11 +94,11 @@ def remember(
 
         cleaned_content = (content or "").strip()
         if not cleaned_content:
-            return {
-                "status": "error",
-                "namespace": ns,
-                "message": "Episode content cannot be empty.",
-            }
+            return MCPRememberResult(
+                status="error",
+                namespace=ns,
+                message="Episode content cannot be empty.",
+            )
 
         store = get_knowledge_store()
         episode = store.create_episode(
@@ -105,14 +113,14 @@ def remember(
         if auto_curate:
             curation_scheduled = _schedule_background_curation(ns)
 
-        return {
-            "status": "stored",
-            "episode_id": episode.id,
-            "namespace": episode.namespace,
-            "auto_curate": auto_curate,
-            "curation_scheduled": curation_scheduled,
-            "episode": episode.model_dump(exclude={"embedding"}),
-        }
+        return MCPRememberResult(
+            status="stored",
+            episode_id=episode.id,
+            namespace=episode.namespace,
+            auto_curate=auto_curate,
+            curation_scheduled=curation_scheduled,
+            episode=EpisodeView.from_model(episode),
+        )
 
 
 @mcp.tool()
@@ -121,7 +129,7 @@ def recall(
     namespace: str = "default",
     top_k: int = 5,
     include_episodes: bool = True,
-) -> dict[str, Any]:
+) -> RecallKnowledgeResult:
     """Hybrid search across synthesized Wiki pages, 1-hop graph neighbors, and pending episodes.
 
     Args:
@@ -151,7 +159,7 @@ def recall(
 def get_page(
     slug_or_title: str,
     namespace: str = "default",
-) -> dict[str, Any]:
+) -> MCPPageResult:
     """Retrieve a Wiki page by slug or title, including Markdown, frontmatter, links, and provenance.
 
     Args:
@@ -168,10 +176,11 @@ def get_page(
         span.set_attribute("blob.slug_or_title", slug_or_title)
 
         res = get_wiki_page(slug_or_title=slug_or_title, namespace=ns)
-        if res.get("status") == "ok":
-            res["raw_markdown"] = res.get("serialized_markdown", "")
-            res["suggestions"] = res.get("open_suggestions", [])
-        return res
+        return MCPPageResult(
+            **res.model_dump(),
+            raw_markdown=res.serialized_markdown,
+            suggestions=res.open_suggestions,
+        )
 
 
 @mcp.tool()
@@ -179,7 +188,7 @@ def traverse_graph(
     seed_slug: str,
     depth: int = 2,
     namespace: str = "default",
-) -> dict[str, Any]:
+) -> GraphNeighborhoodResult:
     """Traverse the local ego-graph around a seed Wiki page up to `depth` hops.
 
     Args:
@@ -207,7 +216,7 @@ def traverse_graph(
 @mcp.tool()
 def list_clusters(
     namespace: str = "default",
-) -> dict[str, Any]:
+) -> ClusterListResult:
     """Return high-level semantic clusters and their member Wiki page slugs in `namespace`.
 
     Args:

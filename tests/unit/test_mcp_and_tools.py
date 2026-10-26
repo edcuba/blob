@@ -94,21 +94,21 @@ def test_all_13_adk_memory_tools_lifecycle() -> None:
         tags=["firestore", "architecture"],
         interaction_id="turn-001",
     )
-    assert ep1["status"] == "ok"
-    ep1_id = ep1["episode_id"]
+    assert ep1.status == "ok"
+    ep1_id = ep1.episode_id
 
     ep2 = remember_episode(
         content="Agent Gateway Federation connects departmental agents over A2A.",
         source_agent="gemini-cli",
         tags=["gateway", "federation"],
     )
-    assert ep2["status"] == "ok"
-    ep2_id = ep2["episode_id"]
+    assert ep2.status == "ok"
+    ep2_id = ep2.episode_id
 
     # 2. list_pending_episodes
     pending = list_pending_episodes()
-    assert pending["status"] == "ok"
-    assert pending["count"] == 2
+    assert pending.status == "ok"
+    assert pending.count == 2
 
     # 3. upsert_wiki_page (creates active page + ghost node from [[wikilink]])
     upserted = upsert_wiki_page(
@@ -121,53 +121,53 @@ def test_all_13_adk_memory_tools_lifecycle() -> None:
         source_episode_ids=[ep1_id],
         source_agent="blob",
     )
-    assert upserted["status"] == "ok"
-    assert upserted["slug"] == "blob-storage-architecture"
-    assert "agent-gateway-federation" in upserted["out_links"]
+    assert upserted.status == "ok"
+    assert upserted.slug == "blob-storage-architecture"
+    assert "agent-gateway-federation" in upserted.out_links
 
     # 4. get_wiki_page (verify active page and auto-created ghost page)
     fetched = get_wiki_page("blob-storage-architecture")
-    assert fetched["status"] == "ok"
-    assert len(fetched["source_episodes"]) == 1
-    assert fetched["source_episodes"][0]["id"] == ep1_id
-    assert "---" in fetched["serialized_markdown"]
+    assert fetched.status == "ok"
+    assert len(fetched.source_episodes) == 1
+    assert fetched.source_episodes[0].id == ep1_id
+    assert "---" in fetched.serialized_markdown
 
     ghost_fetched = get_wiki_page("Agent Gateway Federation")
-    assert ghost_fetched["status"] == "ok"
-    assert ghost_fetched["page_status"] == "ghost"
-    assert "blob-storage-architecture" in ghost_fetched["backlinks"]
+    assert ghost_fetched.status == "ok"
+    assert ghost_fetched.page_status == "ghost"
+    assert "blob-storage-architecture" in ghost_fetched.backlinks
 
     # 5. recall_knowledge
     recalled = recall_knowledge(
         "Firestore 768-d vectors", top_k=3, include_episodes=True
     )
-    assert recalled["status"] == "ok"
-    assert any(m["slug"] == "blob-storage-architecture" for m in recalled["matches"])
-    assert any(n["slug"] == "agent-gateway-federation" for n in recalled["neighbors"])
+    assert recalled.status == "ok"
+    assert any(m.slug == "blob-storage-architecture" for m in recalled.matches)
+    assert any(n.slug == "agent-gateway-federation" for n in recalled.neighbors)
 
     # 6. get_graph_neighborhood
     ego = get_graph_neighborhood("blob-storage-architecture", depth=1)
-    assert ego["status"] == "ok"
-    ego_slugs = {n["slug"] for n in ego["nodes"]}
+    assert ego.status == "ok"
+    ego_slugs = {n.slug for n in ego.nodes}
     assert ego_slugs == {"blob-storage-architecture", "agent-gateway-federation"}
 
     # 7. mark_episodes_synthesized
     marked = mark_episodes_synthesized(
         episode_ids=[ep2_id], target_slug="agent-gateway-federation"
     )
-    assert marked["status"] == "ok"
-    assert marked["updated_count"] == 1
-    assert list_pending_episodes()["count"] == 0
+    assert marked.status == "ok"
+    assert marked.updated_count == 1
+    assert list_pending_episodes().count == 0
 
     # 8. recompute_semantic_clusters, 9. list_semantic_clusters, 10. update_cluster_metadata
     recomputed = recompute_semantic_clusters(max_clusters=2)
-    assert recomputed["status"] == "ok"
-    assert recomputed["count"] >= 1
-    cluster_id = recomputed["clusters"][0]["id"]
+    assert recomputed.status == "ok"
+    assert recomputed.count >= 1
+    cluster_id = recomputed.clusters[0].id
 
     listed_clusters = list_semantic_clusters()
-    assert listed_clusters["status"] == "ok"
-    assert listed_clusters["count"] == recomputed["count"]
+    assert listed_clusters.status == "ok"
+    assert listed_clusters.count == recomputed.count
 
     updated_cluster = update_cluster_metadata(
         cluster_id=cluster_id,
@@ -175,8 +175,8 @@ def test_all_13_adk_memory_tools_lifecycle() -> None:
         summary="Synthesized storage and gateway cluster.",
         color="#10b981",
     )
-    assert updated_cluster["status"] == "ok"
-    assert updated_cluster["cluster"]["title"] == "Storage & Federation"
+    assert updated_cluster.status == "ok"
+    assert updated_cluster.cluster.title == "Storage & Federation"
 
     # 11. create_curation_suggestion & 12. resolve_curation_suggestion
     sug = create_curation_suggestion(
@@ -190,17 +190,17 @@ def test_all_13_adk_memory_tools_lifecycle() -> None:
             "Connects departmental agents back to [[Blob Storage Architecture]]."
         ),
     )
-    assert sug["status"] == "ok"
-    sug_id = sug["suggestion_id"]
+    assert sug.status == "ok"
+    sug_id = sug.suggestion_id
 
     resolved = resolve_curation_suggestion(suggestion_id=sug_id, action="apply")
-    assert resolved["status"] == "ok"
-    assert resolved["page"]["status"] == "active"
+    assert resolved.status == "ok"
+    assert resolved.page.status == "active"
 
     # 13. delete_wiki_page
     deleted = delete_wiki_page("agent-gateway-federation")
-    assert deleted["status"] == "ok"
-    assert deleted["deleted"] is True
+    assert deleted.status == "ok"
+    assert deleted.deleted is True
 
 
 def test_adk_ui_tools_and_event_bus_turn_collector() -> None:
@@ -218,11 +218,11 @@ def test_adk_ui_tools_and_event_bus_turn_collector() -> None:
         "cluster-system-architecture", reason="Zoom into architecture cluster"
     )
 
-    assert nav["status"] == "ok"
-    assert nav["slug"] == "blob-storage-architecture"
-    assert hl["status"] == "ok"
-    assert hl["slugs"] == ["blob-storage-architecture", "mcp-memory-interface"]
-    assert focus["status"] == "ok"
+    assert nav.status == "ok"
+    assert nav.slug == "blob-storage-architecture"
+    assert hl.status == "ok"
+    assert hl.slugs == ["blob-storage-architecture", "mcp-memory-interface"]
+    assert focus.status == "ok"
 
     collected = bus.pop_turn_actions(turn_id)
     assert [e.type for e in collected] == [
@@ -241,8 +241,8 @@ def test_mcp_tools_and_resources_end_to_end() -> None:
         tags=["firestore", "vector-search"],
         auto_curate=False,
     )
-    assert rem_res["status"] == "stored"
-    ep_id = rem_res["episode_id"]
+    assert rem_res.status == "stored"
+    ep_id = rem_res.episode_id
 
     # 2. MCP curate (synchronously awaits run_curation_pipeline)
     curate_res = asyncio.run(curate(namespace="default"))
@@ -253,24 +253,25 @@ def test_mcp_tools_and_resources_end_to_end() -> None:
 
     # 3. MCP get_page
     page_res = get_page(created_slug)
-    assert page_res["status"] == "ok"
-    assert page_res["slug"] == created_slug
-    assert "768 dimensions" in page_res["markdown_body"]
+    assert page_res.status == "ok"
+    assert page_res.slug == created_slug
+    assert "768 dimensions" in page_res.markdown_body
+    assert page_res.raw_markdown == page_res.serialized_markdown
 
     # 4. MCP recall
     recall_res = recall("Firestore composite vector indexes", top_k=3)
-    assert recall_res["status"] == "ok"
-    assert any(m["slug"] == created_slug for m in recall_res["matches"])
+    assert recall_res.status == "ok"
+    assert any(m.slug == created_slug for m in recall_res.matches)
 
     # 5. MCP traverse_graph
     graph_res = traverse_graph(created_slug, depth=1)
-    assert graph_res["status"] == "ok"
-    assert any(n["slug"] == created_slug for n in graph_res["nodes"])
+    assert graph_res.status == "ok"
+    assert any(n.slug == created_slug for n in graph_res.nodes)
 
     # 6. MCP list_clusters
     clusters_res = list_clusters()
-    assert clusters_res["status"] == "ok"
-    assert clusters_res["count"] >= 1
+    assert clusters_res.status == "ok"
+    assert clusters_res.count >= 1
 
     # 7. MCP Resources (blob://wiki, blob://clusters, blob://graph)
     wiki_md = read_wiki_resource("default", created_slug)

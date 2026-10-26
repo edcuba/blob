@@ -63,6 +63,7 @@ from blob.storage import (
     title_from_slug,
     utc_now_iso,
 )
+from blob.tools.structured_tool import StructuredFunctionTool
 from blob.tools.ui_tools import (
     ui_focus_cluster,
     ui_highlight_graph_nodes,
@@ -849,11 +850,11 @@ _assistant_agent = Agent(
         "internal graph curator)."
     ),
     tools=[
-        mcp_remember,
-        mcp_recall,
-        mcp_get_page,
-        mcp_traverse_graph,
-        mcp_list_clusters,
+        StructuredFunctionTool(mcp_remember),
+        StructuredFunctionTool(mcp_recall),
+        StructuredFunctionTool(mcp_get_page),
+        StructuredFunctionTool(mcp_traverse_graph),
+        StructuredFunctionTool(mcp_list_clusters),
     ],
 )
 
@@ -900,8 +901,8 @@ def _offline_assistant_fallback(
                 },
             }
         )
-        ep_id = rem_res.get("episode_id", "ep-unknown")
-        scheduled = bool(rem_res.get("curation_scheduled", False))
+        ep_id = rem_res.episode_id or "ep-unknown"
+        scheduled = rem_res.curation_scheduled
         curation_note = (
             "Background wiki curation has been scheduled automatically."
             if scheduled
@@ -931,14 +932,12 @@ def _offline_assistant_fallback(
         }
     )
 
-    matches = recall_res.get("matches", [])
-    pending_eps = recall_res.get("pending_episodes", [])
+    matches = recall_res.matches
+    pending_eps = recall_res.pending_episodes
     sections: list[str] = []
 
     if matches:
-        page_lines = [
-            f"- **[[{m['title']}]]** (`{m['slug']}`): {m['summary']}" for m in matches
-        ]
+        page_lines = [f"- **[[{m.title}]]** (`{m.slug}`): {m.summary}" for m in matches]
         sections.append(
             "Here is what I found in your Blob Wiki memory via MCP `recall`:\n\n"
             + "\n".join(page_lines)
@@ -946,7 +945,7 @@ def _offline_assistant_fallback(
 
     if pending_eps:
         ep_lines = [
-            f"- `{ep['id']}` ({ep.get('source_agent', 'agent')}): {ep['content']}"
+            f"- `{ep.id}` ({ep.source_agent or 'agent'}): {ep.content}"
             for ep in pending_eps[:3]
         ]
         sections.append("**Recent Pending Episodes:**\n" + "\n".join(ep_lines))
