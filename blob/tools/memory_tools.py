@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 from opentelemetry import trace
 
-from app.storage import (
+from blob.storage import (
     get_knowledge_store,
     serialize_wiki_page,
     slugify,

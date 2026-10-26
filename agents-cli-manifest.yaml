@@ -1,6 +1,6 @@
 name: "blob"
 acli_version: "1.11.0"
-agent_directory: "app"
+agent_directory: "blob"
 region: 'us-east1'
 base_template: "adk"
 generated_at: "2026-10-25T17:08:53.960865+00:00"

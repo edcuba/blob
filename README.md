@@ -54,14 +54,16 @@ Modern AI agents accumulate context, preferences, facts, and episodic memories a
 
 ```text
 blob/
-├── app/                       # Core ADK agent, MCP server, storage & FastAPI backend
-│   ├── agent.py               # Blob root_agent, wiki_curator, cluster_analyst & curation pipeline
+├── blob/                      # Core Blob memory fabric, curator agent, MCP server & FastAPI backend
+│   ├── agent.py               # Blob curator root_agent, wiki_curator, cluster_analyst & curation pipeline
 │   ├── fast_api_app.py        # Unified FastAPI server (ADK, A2A, /mcp, /api/*, /insider)
 │   ├── mcp_server.py          # Universal FastMCP server (/mcp & stdio)
 │   ├── api/                   # Explorer REST & SSE endpoints (/api/*)
 │   ├── storage/               # KnowledgeStore (Firestore & InMemory), parser, 768-d embeddings & seed
 │   ├── tools/                 # 13 ADK memory tools & 3 bidirectional UI tools
 │   └── app_utils/             # Shared session/artifact services, A2A & Reasoning Engine adapters
+├── assistant/                 # Simple user-facing demo assistant consuming Blob strictly via MCP
+│   └── agent.py               # ADK assistant connected to Blob's /mcp/sse endpoint via McpToolset
 ├── frontend/                  # Vite + React + TypeScript "Insider View" UI (Graph, Wiki, Sidebar)
 ├── spec/                      # Architecture, deployment & implementation specifications
 │   ├── README.md              # Architecture & design specification
@@ -105,9 +107,64 @@ blob/
 
 4. Or launch the full unified server (serving **ADK Dev UI**, **Insider View** at `/insider`, **Explorer API** at `/api/*`, and **MCP** at `/mcp`):
    ```bash
-   BLOB_AUTO_SEED=true uv run uvicorn app.fast_api_app:app --host 127.0.0.1 --port 8000
+   BLOB_AUTO_SEED=true uv run uvicorn blob.fast_api_app:app --host 127.0.0.1 --port 8000
    # Open http://127.0.0.1:8000/insider for the 2D Force Graph + Wiki + Co-Curation UI
+   # Open http://127.0.0.1:8000/dev-ui/?app=assistant for the simple MCP-connected Demo Assistant
    ```
+
+---
+
+## 🔌 Connecting External Agents & Antigravity via MCP
+
+**Blob** is the underlying memory fabric and curation system (`blob/`), while user-facing assistants and IDE harnesses connect to Blob via **MCP** (`remember`, `recall`, `get_page`, `traverse_graph`, `list_clusters`, `curate`):
+
+### 1. Built-in Demo Assistant (`assistant/`)
+Open **`http://127.0.0.1:8000/dev-ui/?app=assistant`** (or select `assistant` from the top-left dropdown in `/dev-ui/`).
+- `assistant` (`assistant/agent.py`) is a clean, user-facing assistant that connects to Blob over MCP (`http://127.0.0.1:8000/mcp/sse`) via `McpToolset`.
+- Keep **`http://127.0.0.1:8000/insider`** open side-by-side: as you chat with `assistant` in `/dev-ui/`, it calls `remember(..., auto_curate=True)` and `recall(...)` over MCP, and you can watch the 2D knowledge graph in `/insider` ingest and curate memories live.
+
+### 2. Plugging Blob into Antigravity (`mcp_config.json`)
+Add `blob-memory` to your global Antigravity MCP configuration at **`~/.gemini/config/mcp_config.json`**:
+
+#### Option A: Connect to the Live Local Server (Recommended for Live `/insider` Sync)
+Bridges Antigravity over `stdio` directly to the running local server at `http://127.0.0.1:8000/mcp/sse` so memories stored from Antigravity appear immediately in your open `http://127.0.0.1:8000/insider` tab:
+
+```json
+{
+  "mcpServers": {
+    "blob-memory": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://127.0.0.1:8000/mcp/sse"]
+    }
+  }
+}
+```
+
+#### Option B: Direct Python Stdio Server (Standalone / Cloud Firestore Mode)
+Spawns `blob.mcp_server` directly over `stdio` (use with `BLOB_STORAGE_BACKEND=firestore` to share state across processes via Cloud Firestore):
+
+```json
+{
+  "mcpServers": {
+    "blob-memory": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/Users/edcuba/devel/blob-agent",
+        "run",
+        "python",
+        "-m",
+        "blob.mcp_server"
+      ],
+      "env": {
+        "BLOB_AUTO_SEED": "true"
+      }
+    }
+  }
+}
+```
+
+Once added, verify the connection in Antigravity via **Additional Options (`...`) > MCP Servers**. Antigravity will automatically discover `remember`, `recall`, `get_page`, `traverse_graph`, `list_clusters`, and `curate`.
 
 ---
 

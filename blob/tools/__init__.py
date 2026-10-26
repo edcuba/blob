@@ -14,7 +14,7 @@
 
 """ADK memory and bidirectional UI tools for the Blob memory fabric agent."""
 
-from app.tools.memory_tools import (
+from blob.tools.memory_tools import (
     CLUSTER_TOOLS,
     CURATOR_TOOLS,
     MEMORY_TOOLS,
@@ -32,7 +32,7 @@ from app.tools.memory_tools import (
     update_cluster_metadata,
     upsert_wiki_page,
 )
-from app.tools.ui_tools import (
+from blob.tools.ui_tools import (
     UI_TOOLS,
     ui_focus_cluster,
     ui_highlight_graph_nodes,

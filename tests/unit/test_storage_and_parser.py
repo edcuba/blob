@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.storage import (
+from blob.storage import (
     EMBEDDING_DIMENSION,
     DeterministicHashEmbedder,
     EventBus,

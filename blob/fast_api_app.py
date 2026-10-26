@@ -24,13 +24,13 @@ from fastapi.staticfiles import StaticFiles
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.runners import Runner
 
-from app.api.explorer_routes import explorer_router
-from app.app_utils import services
-from app.app_utils.a2a import attach_a2a_routes
-from app.app_utils.reasoning_engine_adapter import (
+from blob.api.explorer_routes import explorer_router
+from blob.app_utils import services
+from blob.app_utils.a2a import attach_a2a_routes
+from blob.app_utils.reasoning_engine_adapter import (
     attach_reasoning_engine_routes,
 )
-from app.mcp_server import mcp
+from blob.mcp_server import mcp
 
 load_dotenv()
 allow_origins = (
@@ -45,8 +45,8 @@ AGENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    from app.agent import app as adk_app
-    from app.agent import root_agent
+    from blob.agent import app as adk_app
+    from blob.agent import root_agent
 
     runner = Runner(
         app=adk_app,

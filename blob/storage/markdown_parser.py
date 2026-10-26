@@ -21,7 +21,7 @@ from typing import Any
 
 import yaml
 
-from app.storage.models import EpisodeSource, GraphRelation, WikiPage, utc_now_iso
+from blob.storage.models import EpisodeSource, GraphRelation, WikiPage, utc_now_iso
 
 _FRONTMATTER_RE = re.compile(
     r"\A\s*---\r?\n(?P<yaml>.*?)\r?\n---\r?\n?(?P<body>.*)\Z",

@@ -12,31 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""In-memory KnowledgeStore implementation for local dev, CI, and fast tests."""
+"""Cloud Firestore KnowledgeStore implementation with Native Vector Search."""
 
 from __future__ import annotations
 
-import re
+import os
 import uuid
 from collections import deque
 from typing import Any, Literal
 
+from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
+from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
+from google.cloud.firestore_v1.vector import Vector
 from opentelemetry import trace
 
-from app.storage.base import KnowledgeStore, get_event_bus
-from app.storage.embeddings import (
+from blob.storage.base import KnowledgeStore, get_event_bus
+from blob.storage.embeddings import (
     Embedder,
     compute_clusters_and_layout,
     cosine_similarity,
     get_embedder,
 )
-from app.storage.markdown_parser import (
+from blob.storage.markdown_parser import (
     extract_summary,
     parse_wiki_markdown,
     slugify,
     title_from_slug,
 )
-from app.storage.models import (
+from blob.storage.memory_store import _keyword_boost
+from blob.storage.models import (
     Cluster,
     CurationSuggestion,
     Episode,
@@ -50,49 +55,70 @@ from app.storage.models import (
 )
 
 tracer = trace.get_tracer(__name__)
-_WORD_RE = re.compile(r"[a-z0-9]{2,}")
 
 
-def _keyword_boost(query: str, candidate_text: str) -> float:
-    """Compute a [0.0, 0.25] lexical overlap boost between query and candidate text."""
-    q_tokens = set(_WORD_RE.findall((query or "").lower()))
-    if not q_tokens:
-        return 0.0
-    c_tokens = set(_WORD_RE.findall((candidate_text or "").lower()))
-    if not c_tokens:
-        return 0.0
-    overlap = len(q_tokens & c_tokens) / len(q_tokens)
-    return round(0.25 * overlap, 6)
+def _vector_to_list(raw: Any) -> list[float]:
+    if raw is None:
+        return []
+    if isinstance(raw, Vector):
+        return [float(x) for x in raw.to_map_value().get("value", [])]
+    if hasattr(raw, "__iter__") and not isinstance(raw, (str, bytes, dict)):
+        return [float(x) for x in raw]
+    return []
 
 
-class InMemoryKnowledgeStore(KnowledgeStore):
-    """Full in-memory implementation of the Blob KnowledgeStore protocol."""
+class FirestoreKnowledgeStore(KnowledgeStore):
+    """Cloud Firestore single-source-of-truth implementation of KnowledgeStore."""
 
-    def __init__(self, embedder: Embedder | None = None) -> None:
+    EPISODES_COLLECTION = "episodes"
+    WIKI_PAGES_COLLECTION = "wiki_pages"
+    CLUSTERS_COLLECTION = "clusters"
+    SUGGESTIONS_COLLECTION = "curation_suggestions"
+
+    def __init__(
+        self,
+        project_id: str | None = None,
+        database: str = "(default)",
+        embedder: Embedder | None = None,
+        client: firestore.Client | None = None,
+    ) -> None:
+        self._project_id = (
+            project_id
+            or os.environ.get("GOOGLE_CLOUD_PROJECT")
+            or os.environ.get("GCP_PROJECT")
+        )
+        self._database = os.environ.get("FIRESTORE_DATABASE", database)
         self._embedder = embedder
-        # Keyed by namespace -> id/slug -> model
-        self._episodes: dict[str, dict[str, Episode]] = {}
-        self._pages: dict[str, dict[str, WikiPage]] = {}
-        self._clusters: dict[str, dict[str, Cluster]] = {}
-        self._suggestions: dict[str, dict[str, CurationSuggestion]] = {}
+        self._client = client
+
+    @property
+    def client(self) -> firestore.Client:
+        if self._client is None:
+            self._client = firestore.Client(
+                project=self._project_id,
+                database=self._database,
+            )
+        return self._client
 
     @property
     def embedder(self) -> Embedder:
-        """Return the injected Embedder or resolve the process default."""
         return self._embedder if self._embedder is not None else get_embedder()
 
-    def clear(self, namespace: str | None = None) -> None:
-        """Clear stored entities (all namespaces if `namespace` is None)."""
-        if namespace is None:
-            self._episodes.clear()
-            self._pages.clear()
-            self._clusters.clear()
-            self._suggestions.clear()
-        else:
-            self._episodes.pop(namespace, None)
-            self._pages.pop(namespace, None)
-            self._clusters.pop(namespace, None)
-            self._suggestions.pop(namespace, None)
+    @staticmethod
+    def _doc_key(namespace: str, key: str) -> str:
+        return key if namespace == "default" else f"{namespace}__{key}"
+
+    @staticmethod
+    def _episode_from_dict(data: dict[str, Any]) -> Episode:
+        payload = dict(data)
+        payload["embedding"] = _vector_to_list(payload.get("embedding"))
+        return Episode.model_validate(payload)
+
+    @staticmethod
+    def _page_from_dict(data: dict[str, Any]) -> WikiPage:
+        payload = dict(data)
+        payload["embedding"] = _vector_to_list(payload.get("embedding"))
+        return WikiPage.model_validate(payload)
 
     # ------------------------------------------------------------------
     # Episodes
@@ -109,7 +135,7 @@ class InMemoryKnowledgeStore(KnowledgeStore):
     ) -> Episode:
         with tracer.start_as_current_span("blob.store.create_episode") as span:
             span.set_attribute("blob.namespace", namespace)
-            span.set_attribute("blob.source_agent", source_agent)
+            span.set_attribute("blob.backend", "firestore")
 
             ep_id = episode_id or f"ep-{uuid.uuid4().hex[:8]}"
             clean_tags = [str(t).strip() for t in (tags or []) if str(t).strip()]
@@ -130,7 +156,13 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                 embedding=embedding,
                 created_at=utc_now_iso(),
             )
-            self._episodes.setdefault(namespace, {})[ep_id] = episode
+            doc_data = episode.model_dump()
+            if embedding:
+                doc_data["embedding"] = Vector(embedding)
+
+            self.client.collection(self.EPISODES_COLLECTION).document(ep_id).set(
+                doc_data
+            )
             get_event_bus().publish(
                 "episode_created",
                 {"id": episode.id, "source_agent": source_agent, "tags": clean_tags},
@@ -141,7 +173,13 @@ class InMemoryKnowledgeStore(KnowledgeStore):
     def get_episode(
         self, episode_id: str, namespace: str = "default"
     ) -> Episode | None:
-        return self._episodes.get(namespace, {}).get(episode_id)
+        snap = (
+            self.client.collection(self.EPISODES_COLLECTION).document(episode_id).get()
+        )
+        if not snap.exists:
+            return None
+        ep = self._episode_from_dict(snap.to_dict() or {})
+        return ep if ep.namespace == namespace else None
 
     def list_episodes(
         self,
@@ -149,9 +187,13 @@ class InMemoryKnowledgeStore(KnowledgeStore):
         status: str | None = None,
         limit: int = 50,
     ) -> list[Episode]:
-        episodes = list(self._episodes.get(namespace, {}).values())
+        query = self.client.collection(self.EPISODES_COLLECTION).where(
+            filter=FieldFilter("namespace", "==", namespace)
+        )
         if status is not None:
-            episodes = [ep for ep in episodes if ep.status == status]
+            query = query.where(filter=FieldFilter("status", "==", status))
+        docs = query.stream()
+        episodes = [self._episode_from_dict(d.to_dict() or {}) for d in docs]
         episodes.sort(key=lambda ep: (ep.created_at, ep.id), reverse=True)
         return episodes[: max(1, limit)]
 
@@ -163,47 +205,60 @@ class InMemoryKnowledgeStore(KnowledgeStore):
     ) -> list[Episode]:
         norm_slug = slugify(target_slug)
         updated: list[Episode] = []
-        ns_episodes = self._episodes.get(namespace, {})
+        col = self.client.collection(self.EPISODES_COLLECTION)
         for ep_id in episode_ids:
-            ep = ns_episodes.get(ep_id)
+            ep = self.get_episode(ep_id, namespace=namespace)
             if ep is None:
                 continue
             ep.status = "synthesized"
             if norm_slug not in ep.synthesized_into:
                 ep.synthesized_into.append(norm_slug)
+            col.document(ep_id).update(
+                {
+                    "status": "synthesized",
+                    "synthesized_into": ep.synthesized_into,
+                }
+            )
             updated.append(ep)
         return updated
 
     # ------------------------------------------------------------------
-    # Wiki Pages & Graph Link Maintenance
+    # Wiki Pages
     # ------------------------------------------------------------------
 
     def _recompute_backlinks(self, namespace: str) -> None:
-        ns_pages = self._pages.get(namespace, {})
-        inbound: dict[str, set[str]] = {slug: set() for slug in ns_pages}
+        pages = self.list_wiki_pages(namespace=namespace, include_ghosts=True)
+        page_map = {p.slug: p for p in pages}
+        inbound: dict[str, set[str]] = {slug: set() for slug in page_map}
 
-        for src_slug, page in ns_pages.items():
+        for src_slug, page in page_map.items():
             if page.status == "archived":
                 continue
             targets = set(page.out_links) | {r.target for r in page.relations}
-            for target_slug in targets:
-                if target_slug != src_slug and target_slug in inbound:
-                    inbound[target_slug].add(src_slug)
+            for t_slug in targets:
+                if t_slug != src_slug and t_slug in inbound:
+                    inbound[t_slug].add(src_slug)
 
-        for slug, page in ns_pages.items():
-            page.backlinks = sorted(inbound.get(slug, set()))
+        col = self.client.collection(self.WIKI_PAGES_COLLECTION)
+        for slug, page in page_map.items():
+            new_backlinks = sorted(inbound.get(slug, set()))
+            if new_backlinks != page.backlinks:
+                page.backlinks = new_backlinks
+                col.document(self._doc_key(namespace, slug)).update(
+                    {"backlinks": new_backlinks}
+                )
 
     def get_wiki_page(
         self, slug_or_title: str, namespace: str = "default"
     ) -> WikiPage | None:
-        ns_pages = self._pages.get(namespace, {})
-        if slug_or_title in ns_pages:
-            return ns_pages[slug_or_title]
-        norm_slug = slugify(slug_or_title)
-        if norm_slug in ns_pages:
-            return ns_pages[norm_slug]
+        col = self.client.collection(self.WIKI_PAGES_COLLECTION)
+        for candidate in (slug_or_title, slugify(slug_or_title)):
+            snap = col.document(self._doc_key(namespace, candidate)).get()
+            if snap.exists:
+                return self._page_from_dict(snap.to_dict() or {})
+
         lower_query = (slug_or_title or "").strip().lower()
-        for page in ns_pages.values():
+        for page in self.list_wiki_pages(namespace=namespace, include_ghosts=True):
             if page.title.lower() == lower_query:
                 return page
         return None
@@ -216,10 +271,14 @@ class InMemoryKnowledgeStore(KnowledgeStore):
         cluster_id: str | None = None,
         query: str | None = None,
     ) -> list[WikiPage]:
-        pages = list(self._pages.get(namespace, {}).values())
+        fs_query = self.client.collection(self.WIKI_PAGES_COLLECTION).where(
+            filter=FieldFilter("namespace", "==", namespace)
+        )
         if status is not None:
-            pages = [p for p in pages if p.status == status]
-        else:
+            fs_query = fs_query.where(filter=FieldFilter("status", "==", status))
+
+        pages = [self._page_from_dict(d.to_dict() or {}) for d in fs_query.stream()]
+        if status is None:
             pages = [p for p in pages if p.status != "archived"]
             if not include_ghosts:
                 pages = [p for p in pages if p.status != "ghost"]
@@ -240,6 +299,14 @@ class InMemoryKnowledgeStore(KnowledgeStore):
 
         pages.sort(key=lambda p: (p.status == "ghost", p.title.lower()))
         return pages
+
+    def _save_wiki_page_doc(self, page: WikiPage) -> None:
+        doc_data = page.model_dump()
+        if page.embedding:
+            doc_data["embedding"] = Vector(page.embedding)
+        self.client.collection(self.WIKI_PAGES_COLLECTION).document(
+            self._doc_key(page.namespace, page.slug)
+        ).set(doc_data)
 
     def upsert_wiki_page(
         self,
@@ -272,11 +339,10 @@ class InMemoryKnowledgeStore(KnowledgeStore):
 
             span.set_attribute("blob.namespace", namespace)
             span.set_attribute("blob.page.slug", page_slug)
+            span.set_attribute("blob.backend", "firestore")
 
-            ns_pages = self._pages.setdefault(namespace, {})
-            existing = ns_pages.get(page_slug)
+            existing = self.get_wiki_page(page_slug, namespace=namespace)
 
-            # Determine effective status (promote ghost -> active when given body content)
             effective_status: Literal["active", "ghost", "archived"] = status
             if (
                 existing is not None
@@ -285,12 +351,7 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                 and status != "archived"
             ):
                 effective_status = "active"
-            elif (
-                clean_body.strip() and effective_status == "ghost" and status != "ghost"
-            ):
-                effective_status = "active"
 
-            # Merge tags
             merged_tags: list[str] = []
             for t in [
                 *(existing.tags if existing else []),
@@ -301,7 +362,6 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                 if t_clean and t_clean not in merged_tags:
                     merged_tags.append(t_clean)
 
-            # Merge relations
             merged_relations: list[GraphRelation] = []
             seen_rel: set[tuple[str, str]] = set()
             raw_rel_items: list[GraphRelation | dict[str, Any]] = [
@@ -327,10 +387,7 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                             GraphRelation(type=r_type, target=r_target)
                         )
 
-            # Outbound links from inline [[wikilinks]] + relations
-            # Resolve against existing pages by case-insensitive title before creating a new slug
             wikilink_titles: dict[str, str] = parsed["wikilink_titles"]
-            title_to_slug = {p.title.strip().lower(): p.slug for p in ns_pages.values()}
             out_links: list[str] = []
             for candidate in [
                 *parsed["out_links"],
@@ -339,17 +396,17 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                 if not candidate:
                     continue
                 resolved_target = candidate
-                if resolved_target not in ns_pages:
-                    display_title = wikilink_titles.get(
-                        candidate, title_from_slug(candidate)
-                    )
-                    matched_slug = title_to_slug.get(display_title.strip().lower())
-                    if matched_slug:
-                        resolved_target = matched_slug
+                display_title = wikilink_titles.get(
+                    candidate, title_from_slug(candidate)
+                )
+                existing_target = self.get_wiki_page(
+                    resolved_target, namespace=namespace
+                ) or self.get_wiki_page(display_title, namespace=namespace)
+                if existing_target is not None:
+                    resolved_target = existing_target.slug
                 if resolved_target != page_slug and resolved_target not in out_links:
                     out_links.append(resolved_target)
 
-            # Merge provenance sources
             merged_sources: list[EpisodeSource] = []
             seen_ep_ids: set[str] = set()
             for src in [
@@ -380,9 +437,7 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                 for ep_id in source_episode_ids:
                     if ep_id not in seen_ep_ids:
                         seen_ep_ids.add(ep_id)
-                        ep_obj = ep_map.get(ep_id) or self.get_episode(
-                            ep_id, namespace=namespace
-                        )
+                        ep_obj = ep_map.get(ep_id)
                         merged_sources.append(
                             EpisodeSource(
                                 episode_id=ep_id,
@@ -434,33 +489,16 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                 embedding=embedding,
                 updated_at=utc_now_iso(),
             )
-            ns_pages[page_slug] = page
+            self._save_wiki_page_doc(page)
 
-            # If an earlier page created a ghost node under slugify(page_title)
-            # before this page was created with a custom slug, merge & remove the duplicate ghost
-            title_slug = slugify(page_title)
-            if (
-                title_slug != page_slug
-                and title_slug in ns_pages
-                and ns_pages[title_slug].status == "ghost"
-            ):
-                del ns_pages[title_slug]
-                for other_page in ns_pages.values():
-                    if title_slug in other_page.out_links:
-                        other_page.out_links = [
-                            page_slug if s == title_slug else s
-                            for s in other_page.out_links
-                        ]
-
-            # Ensure ghost nodes exist for any referenced target that does not yet exist
             for idx, target_slug in enumerate(out_links):
-                if target_slug not in ns_pages:
+                if self.get_wiki_page(target_slug, namespace=namespace) is None:
                     ghost_title = wikilink_titles.get(
                         target_slug, title_from_slug(target_slug)
                     )
                     ghost_embedding = self.embedder.embed_text(ghost_title)
                     offset = 0.12 * ((idx % 4) + 1)
-                    ns_pages[target_slug] = WikiPage(
+                    ghost_page = WikiPage(
                         slug=target_slug,
                         title=ghost_title,
                         namespace=namespace,
@@ -477,27 +515,21 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                         embedding=ghost_embedding,
                         updated_at=utc_now_iso(),
                     )
+                    self._save_wiki_page_doc(ghost_page)
 
-            # Update cluster membership if cluster exists
-            if resolved_cluster_id:
-                cluster = self._clusters.get(namespace, {}).get(resolved_cluster_id)
-                if cluster and page_slug not in cluster.page_slugs:
-                    cluster.page_slugs.append(page_slug)
-
-            # Recalculate bidirectional backlinks across the namespace
             self._recompute_backlinks(namespace)
-
+            refreshed = self.get_wiki_page(page_slug, namespace=namespace) or page
             get_event_bus().publish(
                 "page_upserted",
                 {
-                    "slug": page.slug,
-                    "title": page.title,
-                    "status": page.status,
-                    "out_links": page.out_links,
+                    "slug": refreshed.slug,
+                    "title": refreshed.title,
+                    "status": refreshed.status,
+                    "out_links": refreshed.out_links,
                 },
                 namespace=namespace,
             )
-            return ns_pages[page_slug]
+            return refreshed
 
     def upsert_wiki_page_from_markdown(
         self,
@@ -533,24 +565,18 @@ class InMemoryKnowledgeStore(KnowledgeStore):
 
     def delete_wiki_page(self, slug: str, namespace: str = "default") -> bool:
         with tracer.start_as_current_span("blob.store.delete_wiki_page") as span:
-            ns_pages = self._pages.get(namespace, {})
-            target_slug = slug if slug in ns_pages else slugify(slug)
-            span.set_attribute("blob.namespace", namespace)
-            span.set_attribute("blob.page.slug", target_slug)
-
-            if target_slug not in ns_pages:
+            existing = self.get_wiki_page(slug, namespace=namespace)
+            if existing is None:
                 return False
 
-            del ns_pages[target_slug]
-            for cluster in self._clusters.get(namespace, {}).values():
-                if target_slug in cluster.page_slugs:
-                    cluster.page_slugs = [
-                        s for s in cluster.page_slugs if s != target_slug
-                    ]
-
+            span.set_attribute("blob.namespace", namespace)
+            span.set_attribute("blob.page.slug", existing.slug)
+            self.client.collection(self.WIKI_PAGES_COLLECTION).document(
+                self._doc_key(namespace, existing.slug)
+            ).delete()
             self._recompute_backlinks(namespace)
             get_event_bus().publish(
-                "page_deleted", {"slug": target_slug}, namespace=namespace
+                "page_deleted", {"slug": existing.slug}, namespace=namespace
             )
             return True
 
@@ -568,12 +594,31 @@ class InMemoryKnowledgeStore(KnowledgeStore):
         with tracer.start_as_current_span("blob.store.recall") as span:
             span.set_attribute("blob.namespace", namespace)
             span.set_attribute("blob.top_k", top_k)
+            span.set_attribute("blob.backend", "firestore")
 
             query_vec = self.embedder.embed_text(query)
-            ns_pages = self._pages.get(namespace, {})
+
+            # Query candidate WikiPages via Firestore Native Vector Search (find_nearest)
+            pages_col = self.client.collection(self.WIKI_PAGES_COLLECTION).where(
+                filter=FieldFilter("namespace", "==", namespace)
+            )
+            try:
+                v_query = pages_col.find_nearest(
+                    vector_field="embedding",
+                    query_vector=Vector(query_vec),
+                    distance_measure=DistanceMeasure.COSINE,
+                    limit=max(top_k * 2, 10),
+                )
+                candidate_pages = [
+                    self._page_from_dict(d.to_dict() or {}) for d in v_query.stream()
+                ]
+            except Exception:
+                candidate_pages = self.list_wiki_pages(
+                    namespace=namespace, include_ghosts=True
+                )
 
             scored_pages: list[tuple[WikiPage, float]] = []
-            for page in ns_pages.values():
+            for page in candidate_pages:
                 if page.status != "active":
                     continue
                 vec_sim = cosine_similarity(query_vec, page.embedding)
@@ -581,15 +626,16 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                     query,
                     f"{page.title} {' '.join(page.tags)} {page.markdown_body}",
                 )
-                score = vec_sim + kw_boost
-                scored_pages.append((page, score))
+                status_adj = 0.0 if page.status == "active" else -0.15
+                scored_pages.append((page, vec_sim + kw_boost + status_adj))
 
             scored_pages.sort(key=lambda item: item[1], reverse=True)
             top_pages = scored_pages[: max(1, top_k)]
             matched_slugs = {p.slug for p, _ in top_pages}
 
-            # Expand 1-hop graph neighborhood around top matched pages
-            neighbor_slugs: list[str] = []
+            # 1-hop graph neighborhood
+            neighbor_pages: list[WikiPage] = []
+            seen_neighbors: set[str] = set()
             for page, _ in top_pages:
                 for linked_slug in [
                     *page.out_links,
@@ -598,19 +644,37 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                 ]:
                     if (
                         linked_slug not in matched_slugs
-                        and linked_slug not in neighbor_slugs
-                        and linked_slug in ns_pages
+                        and linked_slug not in seen_neighbors
                     ):
-                        neighbor_slugs.append(linked_slug)
-
-            neighbor_pages = [ns_pages[s] for s in neighbor_slugs]
+                        n_page = self.get_wiki_page(linked_slug, namespace=namespace)
+                        if n_page is not None and n_page.status != "archived":
+                            seen_neighbors.add(linked_slug)
+                            neighbor_pages.append(n_page)
 
             matched_episodes: list[tuple[Episode, float]] = []
             if include_episodes:
-                ns_episodes = self._episodes.get(namespace, {})
-                for ep in ns_episodes.values():
-                    if ep.status != "pending_curation":
-                        continue
+                ep_col = (
+                    self.client.collection(self.EPISODES_COLLECTION)
+                    .where(filter=FieldFilter("namespace", "==", namespace))
+                    .where(filter=FieldFilter("status", "==", "pending_curation"))
+                )
+                try:
+                    ep_vquery = ep_col.find_nearest(
+                        vector_field="embedding",
+                        query_vector=Vector(query_vec),
+                        distance_measure=DistanceMeasure.COSINE,
+                        limit=max(1, min(top_k, 5)),
+                    )
+                    candidate_eps = [
+                        self._episode_from_dict(d.to_dict() or {})
+                        for d in ep_vquery.stream()
+                    ]
+                except Exception:
+                    candidate_eps = self.list_episodes(
+                        namespace=namespace, status="pending_curation"
+                    )
+
+                for ep in candidate_eps:
                     vec_sim = cosine_similarity(query_vec, ep.embedding)
                     kw_boost = _keyword_boost(
                         query, f"{ep.content} {' '.join(ep.tags)}"
@@ -672,16 +736,14 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                 "pending_episodes": episodes_payload,
             }
 
-    def _build_graph_snapshot_for_pages(
-        self, pages: list[WikiPage], namespace: str
-    ) -> GraphSnapshot:
+    def _build_snapshot(self, pages: list[WikiPage], namespace: str) -> GraphSnapshot:
         page_slugs = {p.slug for p in pages}
         open_sugs = self.list_suggestions(namespace=namespace, status="open")
         sug_counts: dict[str, int] = {}
         for sug in open_sugs:
             sug_counts[sug.target_slug] = sug_counts.get(sug.target_slug, 0) + 1
 
-        nodes: list[GraphNode] = [
+        nodes = [
             GraphNode(
                 slug=p.slug,
                 title=p.title,
@@ -720,22 +782,9 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                             GraphEdge(source=p.slug, target=out_target, type="wikilink")
                         )
 
-        referenced_cids = {p.cluster_id for p in pages if p.cluster_id}
-        all_clusters = self.list_clusters(namespace=namespace)
-        if referenced_cids:
-            clusters = [
-                c
-                for c in all_clusters
-                if c.id in referenced_cids or any(s in page_slugs for s in c.page_slugs)
-            ]
-        else:
-            clusters = all_clusters
-
+        clusters = self.list_clusters(namespace=namespace)
         return GraphSnapshot(
-            namespace=namespace,
-            nodes=nodes,
-            edges=edges,
-            clusters=clusters,
+            namespace=namespace, nodes=nodes, edges=edges, clusters=clusters
         )
 
     def traverse_graph(
@@ -747,24 +796,26 @@ class InMemoryKnowledgeStore(KnowledgeStore):
         with tracer.start_as_current_span("blob.store.traverse_graph") as span:
             span.set_attribute("blob.namespace", namespace)
             span.set_attribute("blob.seed_slug", seed_slug)
-            span.set_attribute("blob.depth", depth)
 
-            seed_page = self.get_wiki_page(seed_slug, namespace=namespace)
-            if seed_page is None:
+            all_pages = {
+                p.slug: p
+                for p in self.list_wiki_pages(namespace=namespace, include_ghosts=True)
+            }
+            seed_key = seed_slug if seed_slug in all_pages else slugify(seed_slug)
+            if seed_key not in all_pages:
                 return GraphSnapshot(
                     namespace=namespace, nodes=[], edges=[], clusters=[]
                 )
 
-            ns_pages = self._pages.get(namespace, {})
             max_depth = max(0, depth)
-            visited: dict[str, int] = {seed_page.slug: 0}
-            queue: deque[tuple[str, int]] = deque([(seed_page.slug, 0)])
+            visited: dict[str, int] = {seed_key: 0}
+            queue: deque[tuple[str, int]] = deque([(seed_key, 0)])
 
             while queue:
                 curr_slug, curr_depth = queue.popleft()
                 if curr_depth >= max_depth:
                     continue
-                curr_page = ns_pages.get(curr_slug)
+                curr_page = all_pages.get(curr_slug)
                 if curr_page is None:
                     continue
                 neighbors = {
@@ -773,50 +824,58 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                     *(r.target for r in curr_page.relations),
                 }
                 for n_slug in sorted(neighbors):
-                    if n_slug in ns_pages and n_slug not in visited:
+                    if n_slug in all_pages and n_slug not in visited:
                         visited[n_slug] = curr_depth + 1
                         queue.append((n_slug, curr_depth + 1))
 
-            sub_pages = [
-                ns_pages[s]
-                for s in visited
-                if s in ns_pages and ns_pages[s].status != "archived"
-            ]
-            return self._build_graph_snapshot_for_pages(sub_pages, namespace)
+            sub_pages = [all_pages[s] for s in visited if s in all_pages]
+            return self._build_snapshot(sub_pages, namespace)
 
     def get_graph_snapshot(self, namespace: str = "default") -> GraphSnapshot:
         pages = self.list_wiki_pages(namespace=namespace, include_ghosts=True)
-        return self._build_graph_snapshot_for_pages(pages, namespace)
+        return self._build_snapshot(pages, namespace)
 
     # ------------------------------------------------------------------
     # Semantic Clusters
     # ------------------------------------------------------------------
 
     def save_cluster(self, cluster: Cluster) -> Cluster:
-        """Persist a Cluster directly in memory."""
-        self._clusters.setdefault(cluster.namespace, {})[cluster.id] = cluster
+        self.client.collection(self.CLUSTERS_COLLECTION).document(
+            self._doc_key(cluster.namespace, cluster.id)
+        ).set(cluster.model_dump())
         return cluster
 
     def list_clusters(self, namespace: str = "default") -> list[Cluster]:
-        clusters = list(self._clusters.get(namespace, {}).values())
+        docs = (
+            self.client.collection(self.CLUSTERS_COLLECTION)
+            .where(filter=FieldFilter("namespace", "==", namespace))
+            .stream()
+        )
+        clusters = [Cluster.model_validate(d.to_dict() or {}) for d in docs]
         clusters.sort(key=lambda c: c.title.lower())
         return clusters
 
     def get_cluster(
         self, cluster_id: str, namespace: str = "default"
     ) -> Cluster | None:
-        return self._clusters.get(namespace, {}).get(cluster_id)
+        snap = (
+            self.client.collection(self.CLUSTERS_COLLECTION)
+            .document(self._doc_key(namespace, cluster_id))
+            .get()
+        )
+        if not snap.exists:
+            return None
+        return Cluster.model_validate(snap.to_dict() or {})
 
     def recompute_clusters(
         self, namespace: str = "default", max_clusters: int = 4
     ) -> list[Cluster]:
         with tracer.start_as_current_span("blob.store.recompute_clusters") as span:
             span.set_attribute("blob.namespace", namespace)
-            span.set_attribute("blob.max_clusters", max_clusters)
+            span.set_attribute("blob.backend", "firestore")
 
-            ns_pages = self._pages.get(namespace, {})
-            pages = [p for p in ns_pages.values() if p.status != "archived"]
-            existing = list(self._clusters.get(namespace, {}).values())
+            pages = self.list_wiki_pages(namespace=namespace, include_ghosts=True)
+            existing = self.list_clusters(namespace=namespace)
 
             clusters, layout_map = compute_clusters_and_layout(
                 pages=pages,
@@ -825,12 +884,19 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                 namespace=namespace,
             )
 
-            self._clusters[namespace] = {c.id: c for c in clusters}
+            c_col = self.client.collection(self.CLUSTERS_COLLECTION)
+            for old_c in existing:
+                c_col.document(self._doc_key(namespace, old_c.id)).delete()
+            for new_c in clusters:
+                c_col.document(self._doc_key(namespace, new_c.id)).set(
+                    new_c.model_dump()
+                )
+
+            p_col = self.client.collection(self.WIKI_PAGES_COLLECTION)
             for slug, (px, py, c_id) in layout_map.items():
-                if slug in ns_pages:
-                    ns_pages[slug].x = px
-                    ns_pages[slug].y = py
-                    ns_pages[slug].cluster_id = c_id
+                p_col.document(self._doc_key(namespace, slug)).update(
+                    {"x": px, "y": py, "cluster_id": c_id}
+                )
 
             get_event_bus().publish(
                 "graph_updated",
@@ -850,7 +916,7 @@ class InMemoryKnowledgeStore(KnowledgeStore):
         color: str | None = None,
         namespace: str = "default",
     ) -> Cluster | None:
-        cluster = self._clusters.get(namespace, {}).get(cluster_id)
+        cluster = self.get_cluster(cluster_id, namespace=namespace)
         if cluster is None:
             return None
         if title is not None and title.strip():
@@ -860,6 +926,7 @@ class InMemoryKnowledgeStore(KnowledgeStore):
         if color is not None and color.strip():
             cluster.color = color.strip()
         cluster.updated_at = utc_now_iso()
+        self.save_cluster(cluster)
         get_event_bus().publish(
             "cluster_updated",
             {"cluster_id": cluster.id, "title": cluster.title},
@@ -896,7 +963,9 @@ class InMemoryKnowledgeStore(KnowledgeStore):
             status="open",
             created_at=utc_now_iso(),
         )
-        self._suggestions.setdefault(namespace, {})[sug_id] = suggestion
+        self.client.collection(self.SUGGESTIONS_COLLECTION).document(sug_id).set(
+            suggestion.model_dump()
+        )
         get_event_bus().publish(
             "suggestion_created",
             {
@@ -914,19 +983,34 @@ class InMemoryKnowledgeStore(KnowledgeStore):
         target_slug: str | None = None,
         status: str | None = "open",
     ) -> list[CurationSuggestion]:
-        suggestions = list(self._suggestions.get(namespace, {}).values())
+        query = self.client.collection(self.SUGGESTIONS_COLLECTION).where(
+            filter=FieldFilter("namespace", "==", namespace)
+        )
         if target_slug is not None:
-            norm_target = slugify(target_slug)
-            suggestions = [s for s in suggestions if s.target_slug == norm_target]
+            query = query.where(
+                filter=FieldFilter("target_slug", "==", slugify(target_slug))
+            )
         if status is not None:
-            suggestions = [s for s in suggestions if s.status == status]
+            query = query.where(filter=FieldFilter("status", "==", status))
+
+        suggestions = [
+            CurationSuggestion.model_validate(d.to_dict() or {}) for d in query.stream()
+        ]
         suggestions.sort(key=lambda s: (s.created_at, s.id), reverse=True)
         return suggestions
 
     def get_suggestion(
         self, suggestion_id: str, namespace: str = "default"
     ) -> CurationSuggestion | None:
-        return self._suggestions.get(namespace, {}).get(suggestion_id)
+        snap = (
+            self.client.collection(self.SUGGESTIONS_COLLECTION)
+            .document(suggestion_id)
+            .get()
+        )
+        if not snap.exists:
+            return None
+        sug = CurationSuggestion.model_validate(snap.to_dict() or {})
+        return sug if sug.namespace == namespace else None
 
     def resolve_suggestion(
         self,
@@ -949,9 +1033,11 @@ class InMemoryKnowledgeStore(KnowledgeStore):
             target_page = self.get_wiki_page(
                 suggestion.target_slug, namespace=namespace
             )
+            col = self.client.collection(self.SUGGESTIONS_COLLECTION)
 
             if action == "dismiss":
                 suggestion.status = "dismissed"
+                col.document(suggestion.id).update({"status": "dismissed"})
                 get_event_bus().publish(
                     "suggestion_resolved",
                     {
@@ -968,7 +1054,6 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                     "page": target_page.model_dump() if target_page else None,
                 }
 
-            # Apply suggestion
             linked_episodes = [
                 ep
                 for ep_id in suggestion.episode_ids
@@ -1006,6 +1091,7 @@ class InMemoryKnowledgeStore(KnowledgeStore):
                 source_agent="wiki_curator",
             )
             suggestion.status = "applied"
+            col.document(suggestion.id).update({"status": "applied"})
             get_event_bus().publish(
                 "suggestion_resolved",
                 {

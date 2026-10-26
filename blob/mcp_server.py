@@ -23,14 +23,14 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from opentelemetry import trace
 
-from app.agent import run_curation_pipeline
-from app.storage import (
+from blob.agent import run_curation_pipeline
+from blob.storage import (
     get_knowledge_store,
     serialize_wiki_page,
     slugify,
     title_from_slug,
 )
-from app.tools.memory_tools import (
+from blob.tools.memory_tools import (
     get_graph_neighborhood,
     get_wiki_page,
     list_semantic_clusters,

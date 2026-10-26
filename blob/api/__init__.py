@@ -14,6 +14,6 @@
 
 """Explorer REST & SSE API package for the Blob Insider View UI."""
 
-from app.api.explorer_routes import explorer_router
+from blob.api.explorer_routes import explorer_router
 
 __all__ = ["explorer_router"]

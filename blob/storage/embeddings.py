@@ -27,8 +27,8 @@ from google import genai
 from google.genai import types
 from opentelemetry import trace
 
-from app.storage.markdown_parser import slugify, title_from_slug
-from app.storage.models import Cluster, WikiPage, utc_now_iso
+from blob.storage.markdown_parser import slugify, title_from_slug
+from blob.storage.models import Cluster, WikiPage, utc_now_iso
 
 EMBEDDING_DIMENSION = 768
 

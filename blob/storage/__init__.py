@@ -14,14 +14,14 @@
 
 """Storage engine, Markdown parser, 768-d embeddings, and seed data for Blob."""
 
-from app.storage.base import (
+from blob.storage.base import (
     EventBus,
     KnowledgeStore,
     get_event_bus,
     get_knowledge_store,
     set_knowledge_store,
 )
-from app.storage.embeddings import (
+from blob.storage.embeddings import (
     EMBEDDING_DIMENSION,
     DeterministicHashEmbedder,
     Embedder,
@@ -31,8 +31,8 @@ from app.storage.embeddings import (
     get_embedder,
     set_embedder,
 )
-from app.storage.firestore_store import FirestoreKnowledgeStore
-from app.storage.markdown_parser import (
+from blob.storage.firestore_store import FirestoreKnowledgeStore
+from blob.storage.markdown_parser import (
     extract_summary,
     extract_wikilinks,
     parse_wiki_markdown,
@@ -40,8 +40,8 @@ from app.storage.markdown_parser import (
     slugify,
     title_from_slug,
 )
-from app.storage.memory_store import InMemoryKnowledgeStore
-from app.storage.models import (
+from blob.storage.memory_store import InMemoryKnowledgeStore
+from blob.storage.models import (
     VALID_RELATION_TYPES,
     Cluster,
     CurationSuggestion,
@@ -55,7 +55,7 @@ from app.storage.models import (
     WikiPage,
     utc_now_iso,
 )
-from app.storage.seed import seed_knowledge_store
+from blob.storage.seed import seed_knowledge_store
 
 __all__ = [
     "EMBEDDING_DIMENSION",

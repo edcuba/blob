@@ -20,7 +20,7 @@ from typing import Any
 
 from opentelemetry import trace
 
-from app.storage import get_event_bus, slugify
+from blob.storage import get_event_bus, slugify
 
 tracer = trace.get_tracer(__name__)
 

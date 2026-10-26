@@ -18,8 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.storage.base import KnowledgeStore, get_event_bus, get_knowledge_store
-from app.storage.models import Cluster, GraphRelation, utc_now_iso
+from blob.storage.base import KnowledgeStore, get_event_bus, get_knowledge_store
+from blob.storage.models import Cluster, GraphRelation, utc_now_iso
 
 
 def seed_knowledge_store(
@@ -405,7 +405,7 @@ def seed_knowledge_store(
         markdown_body=(
             "# MCP Memory Interface\n\n"
             "External IDE agents, CLIs, and workflows connect to Blob via FastMCP over "
-            "Streamable HTTP (`/mcp`) or `stdio` (`uv run python -m app.mcp_server`).\n\n"
+            "Streamable HTTP (`/mcp`) or `stdio` (`uv run python -m blob.mcp_server`).\n\n"
             "## Exposed Surface\n"
             "- **Tools**: `remember`, `recall`, `get_page`, `traverse_graph`, `list_clusters`, and `curate`.\n"
             "- **Resources**: `blob://wiki/{namespace}/{slug}`, `blob://clusters/{namespace}`, and `blob://graph/{namespace}`.\n\n"

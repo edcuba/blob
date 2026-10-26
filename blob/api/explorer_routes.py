@@ -29,10 +29,10 @@ from google.genai import types
 from opentelemetry import trace
 from pydantic import BaseModel, Field
 
-from app.agent import app as adk_app
-from app.agent import run_curation_pipeline
-from app.app_utils import services
-from app.storage import (
+from blob.agent import app as adk_app
+from blob.agent import run_curation_pipeline
+from blob.app_utils import services
+from blob.storage import (
     KnowledgeStore,
     WikiPage,
     extract_summary,
@@ -44,7 +44,7 @@ from app.storage import (
     title_from_slug,
     utc_now_iso,
 )
-from app.tools.ui_tools import (
+from blob.tools.ui_tools import (
     ui_focus_cluster,
     ui_highlight_graph_nodes,
     ui_navigate_to_page,

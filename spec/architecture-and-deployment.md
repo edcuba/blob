@@ -7,11 +7,11 @@
 
 ## 1. End-to-End Runtime Topology
 
-Blob runs as a unified Python FastAPI application (`app/fast_api_app.py`) exposing **four distinct serving surfaces** over a shared ADK `Runner` and a pluggable `KnowledgeStore` backend:
+Blob runs as a unified Python FastAPI application (`blob/fast_api_app.py`) exposing **four distinct serving surfaces** over a shared ADK `Runner` and a pluggable `KnowledgeStore` backend:
 
 1. **Universal MCP Server (`/mcp` HTTP/SSE & `stdio`)**: Connects external agents (IDE assistants, CLI tools, custom workflows) to the shared memory fabric.
 2. **Explorer REST & SSE API (`/api/*`)**: Powers the visual graph canvas, Markdown wiki CRUD, 1-click curation suggestions, and real-time UI event streaming.
-3. **ADK & A2A Agent Endpoints (`/run_sse`, `/a2a/app`, `/api/reasoning_engine`)**: Serves the conversational `blob` agent, ADK Dev UI (`/`), and multi-agent A2A protocol.
+3. **ADK & A2A Agent Endpoints (`/run_sse`, `/a2a/blob`, `/api/reasoning_engine`)**: Serves the conversational `blob` agent, ADK Dev UI (`/`), and multi-agent A2A protocol.
 4. **"Insider View" Static SPA (`/insider`)**: Serves the compiled React + TypeScript (Vite) frontend bundle (`frontend/dist`) alongside the ADK Dev UI without route collisions.
 
 ```mermaid
@@ -22,20 +22,20 @@ flowchart TB
         A2ACaller["Gemini Platform / A2A Clients"]
     end
 
-    subgraph FastAPI["2. Unified FastAPI Server (app/fast_api_app.py)"]
+    subgraph FastAPI["2. Unified FastAPI Server (blob/fast_api_app.py)"]
         MCPEndpoint["/mcp (FastMCP Streamable HTTP/SSE & stdio)"]
         ExplorerREST["/api/pages, /api/graph, /api/episodes, /api/curate"]
         EventStream["/api/events (SSE Real-Time Event Bus)"]
-        ADKEndpoint["/run_sse, /a2a/app, /api/stream_reasoning_engine"]
+        ADKEndpoint["/run_sse, /a2a/blob, /api/stream_reasoning_engine"]
         StaticAssets["/ (Compiled React/Vite Bundle)"]
     end
 
-    subgraph ADKHierarchy["3. Google ADK Agent Hierarchy (app/agent.py)"]
+    subgraph ADKHierarchy["3. Google ADK Agent Hierarchy (blob/agent.py)"]
         RootBlob["root_agent ('blob' - gemini-3.8-flash)"]
         SubCurator["wiki_curator (Synthesis & Link Hygiene)"]
         SubCluster["cluster_analyst (Vector Clustering & MOCs)"]
-        MemTools["Shared Memory Toolset (app/tools/memory_tools.py)"]
-        UITools["UI Action Toolset (app/tools/ui_tools.py)"]
+        MemTools["Shared Memory Toolset (blob/tools/memory_tools.py)"]
+        UITools["UI Action Toolset (blob/tools/ui_tools.py)"]
 
         RootBlob -->|"Delegates synthesis"| SubCurator
         RootBlob -->|"Delegates clustering"| SubCluster
@@ -45,10 +45,10 @@ flowchart TB
         SubCluster --> MemTools
     end
 
-    subgraph StorageEngine["4. Storage & Graph Engine (app/storage/)"]
+    subgraph StorageEngine["4. Storage & Graph Engine (blob/storage/)"]
         Parser["Markdown & [[Wikilink]] Parser"]
         Embedder["Embedding & 2D Projection Engine (google-genai)"]
-        StoreProto["KnowledgeStore Protocol (app/storage/base.py)"]
+        StoreProto["KnowledgeStore Protocol (blob/storage/base.py)"]
         FirestoreImpl[("FirestoreKnowledgeStore (Cloud Single Source of Truth)")]
         MemoryImpl[("InMemoryKnowledgeStore (Local Dev / CI / Seed)")]
 
@@ -359,7 +359,7 @@ flowchart TB
 
 ### 4.3 Serving Topology on GCP: Vertex AI Agent Runtime
 
-The unified container (`Dockerfile` running `uvicorn app.fast_api_app:app --host 0.0.0.0 --port 8080`) packages the **ADK Agent**, **A2A Server**, **MCP Server (`/mcp`)**, **Explorer API (`/api/*`)**, and **React UI (`frontend/dist`)** and deploys to **Vertex AI Agent Runtime** (`deployment_target: "agent_runtime"`):
+The unified container (`Dockerfile` running `uvicorn blob.fast_api_app:app --host 0.0.0.0 --port 8080`) packages the **ADK Agent**, **A2A Server**, **MCP Server (`/mcp`)**, **Explorer API (`/api/*`)**, and **React UI (`frontend/dist`)** and deploys to **Vertex AI Agent Runtime** (`deployment_target: "agent_runtime"`):
 
 ```mermaid
 flowchart LR
@@ -419,24 +419,24 @@ flowchart LR
 ### 6.1 Tool & Interface Design
 | Surface | Module | Tools / Endpoints | Error & Schema Contract |
 | :--- | :--- | :--- | :--- |
-| **MCP Server** | `app/mcp_server.py` (`/mcp` & `stdio`) | Tools: `remember`, `recall`, `get_page`, `traverse_graph`, `list_clusters`, `curate`<br>Resources: `blob://wiki/{ns}/{slug}`, `blob://clusters/{ns}`, `blob://graph/{ns}` | Typed Pydantic/FastMCP schemas; returns structured dicts (`status`, `data`, `provenance`) |
-| **ADK Memory Tools** | `app/tools/memory_tools.py` | `remember_episode`, `recall_knowledge`, `get_wiki_page`, `upsert_wiki_page`, `delete_wiki_page`, `list_pending_episodes`, `mark_episodes_synthesized`, `get_graph_neighborhood`, `list_semantic_clusters`, `recompute_semantic_clusters`, `update_cluster_metadata`, `create_curation_suggestion`, `resolve_curation_suggestion` | Idempotent writes; automatic `[[wikilink]]` parsing, ghost-node creation, and backlink updates; returns `{"status": "ok"\|"error", ...}` |
-| **ADK UI Tools** | `app/tools/ui_tools.py` | `ui_navigate_to_page(slug)`, `ui_highlight_graph_nodes(slugs, reason)`, `ui_focus_cluster(cluster_id)` | Pushes `UIActionEvent` to both `EventBus` (`/api/events`) and turn collector (`/api/chat`) |
-| **Explorer REST & SSE** | `app/api/explorer_routes.py` (`/api/*`) | `GET /api/graph`, `GET/PUT/DELETE /api/pages/{slug}`, `GET/POST /api/episodes`, `POST /api/curate`, `POST /api/suggestions/{id}/apply\|dismiss`, `POST /api/seed`, `POST /api/chat`, `GET /api/events` | FastAPI Pydantic request/response models; SSE heartbeats + JSON event frames |
-| **ADK / A2A / SPA** | `app/fast_api_app.py` | `/`, `/run_sse`, `/a2a/app`, `/api/reasoning_engine`, `/api/stream_reasoning_engine`, `/insider` | Preserves native ADK Web, A2A v1.0 + v0.3 card compatibility, and Reasoning Engine adapter |
+| **MCP Server** | `blob/mcp_server.py` (`/mcp` & `stdio`) | Tools: `remember`, `recall`, `get_page`, `traverse_graph`, `list_clusters`, `curate`<br>Resources: `blob://wiki/{ns}/{slug}`, `blob://clusters/{ns}`, `blob://graph/{ns}` | Typed Pydantic/FastMCP schemas; returns structured dicts (`status`, `data`, `provenance`) |
+| **ADK Memory Tools** | `blob/tools/memory_tools.py` | `remember_episode`, `recall_knowledge`, `get_wiki_page`, `upsert_wiki_page`, `delete_wiki_page`, `list_pending_episodes`, `mark_episodes_synthesized`, `get_graph_neighborhood`, `list_semantic_clusters`, `recompute_semantic_clusters`, `update_cluster_metadata`, `create_curation_suggestion`, `resolve_curation_suggestion` | Idempotent writes; automatic `[[wikilink]]` parsing, ghost-node creation, and backlink updates; returns `{"status": "ok"\|"error", ...}` |
+| **ADK UI Tools** | `blob/tools/ui_tools.py` | `ui_navigate_to_page(slug)`, `ui_highlight_graph_nodes(slugs, reason)`, `ui_focus_cluster(cluster_id)` | Pushes `UIActionEvent` to both `EventBus` (`/api/events`) and turn collector (`/api/chat`) |
+| **Explorer REST & SSE** | `blob/api/explorer_routes.py` (`/api/*`) | `GET /api/graph`, `GET/PUT/DELETE /api/pages/{slug}`, `GET/POST /api/episodes`, `POST /api/curate`, `POST /api/suggestions/{id}/apply\|dismiss`, `POST /api/seed`, `POST /api/chat`, `GET /api/events` | FastAPI Pydantic request/response models; SSE heartbeats + JSON event frames |
+| **ADK / A2A / SPA** | `blob/fast_api_app.py` | `/`, `/run_sse`, `/a2a/blob`, `/api/reasoning_engine`, `/api/stream_reasoning_engine`, `/insider` | Preserves native ADK Web, A2A v1.0 + v0.3 card compatibility, and Reasoning Engine adapter |
 
 ### 6.2 Context & Memory Architecture
-- **Session & Artifact Services (`app/app_utils/services.py`)**:
-  - `SESSION_SERVICE_URI = "shared://session"` resolves to `VertexAiSessionService` on Agent Runtime (`GOOGLE_CLOUD_AGENT_ENGINE_ID`) or `InMemorySessionService` locally, ensuring sessions created on `/run_sse`, `/a2a/app`, `/api/stream_reasoning_engine`, or `/api/chat` share state.
+- **Session & Artifact Services (`blob/app_utils/services.py`)**:
+  - `SESSION_SERVICE_URI = "shared://session"` resolves to `VertexAiSessionService` on Agent Runtime (`GOOGLE_CLOUD_AGENT_ENGINE_ID`) or `InMemorySessionService` locally, ensuring sessions created on `/run_sse`, `/a2a/blob`, `/api/stream_reasoning_engine`, or `/api/chat` share state.
   - `ARTIFACT_SERVICE_URI = "shared://artifact"` resolves to `GcsArtifactService` when `LOGS_BUCKET_NAME` is configured, or `InMemoryArtifactService` locally.
-- **KnowledgeStore & Fail-Fast Embeddings (`app/storage/`)**:
+- **KnowledgeStore & Fail-Fast Embeddings (`blob/storage/`)**:
   - `BLOB_STORAGE_BACKEND` (`memory` | `firestore` | `auto`) selects `InMemoryKnowledgeStore` for local/test runs and `FirestoreKnowledgeStore` when `BLOB_STORAGE_BACKEND=firestore` or on Agent Runtime.
   - `GenAIEmbedder` calls `google-genai` with `output_dimensionality=768` and `GOOGLE_CLOUD_EMBEDDING_LOCATION` (defaulting to `us-east1`). **Missing or failing embedders in production raise an explicit exception** (never silently degrading to random/hash vectors); `DeterministicHashEmbedder` is restricted strictly to unit tests (`BLOB_EMBEDDING_BACKEND=hash`).
 - **Active View Context Injection**:
   - `POST /api/chat` accepts `view_context` (`active_page_slug`, `selected_cluster_id`, `visible_neighbors`, `namespace`), persists it into `session.state["view_context"]`, and prepends a compact context header to the user message so `blob` can resolve references like *"why does this page exist?"* or *"what links here?"* immediately.
 
 ### 6.3 Orchestration & Logic
-- **Coordinator + `AgentTool` Sub-Agents (`app/agent.py`)**:
+- **Coordinator + `AgentTool` Sub-Agents (`blob/agent.py`)**:
   - `root_agent` (`name="blob"`, `model="gemini-3.8-flash"`) wraps `wiki_curator` and `cluster_analyst` via `AgentTool(agent=...)` rather than `sub_agents` handoff. This guarantees `root_agent` retains control of the turn after invoking a sub-agent, allowing it to call `ui_highlight_graph_nodes` or `ui_navigate_to_page` before streaming the final answer.
   - Background curation (`POST /api/curate` and MCP `curate`) invokes `run_curation_pipeline(namespace, focus_slug)`, which executes `wiki_curator` to synthesize `pending_curation` episodes and then `cluster_analyst` to refresh clusters and 2D layout coordinates.
 

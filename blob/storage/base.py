@@ -22,8 +22,8 @@ import uuid
 from abc import ABC, abstractmethod
 from typing import Any, Literal
 
-from app.storage.markdown_parser import serialize_wiki_page
-from app.storage.models import (
+from blob.storage.markdown_parser import serialize_wiki_page
+from blob.storage.models import (
     Cluster,
     CurationSuggestion,
     Episode,
@@ -437,11 +437,11 @@ def get_knowledge_store() -> KnowledgeStore:
     if not is_integration_test and (
         backend == "firestore" or (backend == "auto" and on_agent_runtime)
     ):
-        from app.storage.firestore_store import FirestoreKnowledgeStore
+        from blob.storage.firestore_store import FirestoreKnowledgeStore
 
         _knowledge_store = FirestoreKnowledgeStore()
     else:
-        from app.storage.memory_store import InMemoryKnowledgeStore
+        from blob.storage.memory_store import InMemoryKnowledgeStore
 
         _knowledge_store = InMemoryKnowledgeStore()
         auto_seed = os.environ.get("BLOB_AUTO_SEED", "").strip().lower() in (
@@ -449,7 +449,7 @@ def get_knowledge_store() -> KnowledgeStore:
             "1",
         )
         if auto_seed:
-            from app.storage.seed import seed_knowledge_store
+            from blob.storage.seed import seed_knowledge_store
 
             seed_knowledge_store(_knowledge_store)
 

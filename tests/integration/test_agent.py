@@ -21,15 +21,15 @@ from google.adk.sessions import InMemorySessionService
 from google.adk.tools import AgentTool
 from google.genai import types
 
-from app.agent import MODEL, root_agent, run_curation_pipeline
-from app.storage import (
+from blob.agent import MODEL, root_agent, run_curation_pipeline
+from blob.storage import (
     DeterministicHashEmbedder,
     InMemoryKnowledgeStore,
     seed_knowledge_store,
     set_embedder,
     set_knowledge_store,
 )
-from app.tools import (
+from blob.tools import (
     MEMORY_TOOLS,
     UI_TOOLS,
     recall_knowledge,

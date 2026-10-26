@@ -22,9 +22,9 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from app.agent import MODEL, root_agent
-from app.fast_api_app import app
-from app.mcp_server import (
+from blob.agent import MODEL, root_agent
+from blob.fast_api_app import app
+from blob.mcp_server import (
     curate,
     get_page,
     list_clusters,
@@ -35,14 +35,14 @@ from app.mcp_server import (
     remember,
     traverse_graph,
 )
-from app.storage import (
+from blob.storage import (
     DeterministicHashEmbedder,
     InMemoryKnowledgeStore,
     get_event_bus,
     set_embedder,
     set_knowledge_store,
 )
-from app.tools import (
+from blob.tools import (
     MEMORY_TOOLS,
     UI_TOOLS,
     create_curation_suggestion,

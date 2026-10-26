@@ -26,7 +26,7 @@ from google.adk.tools import AgentTool
 from google.genai import types
 from opentelemetry import trace
 
-from app.storage import (
+from blob.storage import (
     Episode,
     WikiPage,
     get_event_bus,
@@ -34,7 +34,7 @@ from app.storage import (
     slugify,
     title_from_slug,
 )
-from app.tools import (
+from blob.tools import (
     CLUSTER_TOOLS,
     CURATOR_TOOLS,
     MEMORY_TOOLS,
@@ -157,7 +157,7 @@ root_agent = Agent(
 
 app = App(
     root_agent=root_agent,
-    name="app",
+    name="blob",
 )
 
 
